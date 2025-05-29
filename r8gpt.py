@@ -7,6 +7,8 @@ from datetime import datetime, timedelta
 import os
 from r8gptInclude import WORLDSAVE_PATH, DB_FILENAME, LOG_FILENAME, AI_ALERT_TIME, PLAYER_ALERT_TIME, BOT_TOKEN, \
     CH_LOG, CH_ALERT, CREWED_TAG
+import r8gptDB
+
 
 # Necessary Bot intents
 intents = discord.Intents.default()
@@ -16,6 +18,8 @@ intents.message_content = True
 
 SAVENAME = WORLDSAVE_PATH + '/Auto Save World.xml'
 DIESEL_ENGINE = 'US_DieselEngine'
+event_db = list()
+
 
 
 class Car:
@@ -218,6 +222,9 @@ async def clock_in(ctx: discord.ApplicationContext, symbol: str):
             msg = (f"[{playerTrains[ret].latest_update_time}] {ctx.author.display_name} crewed {symbol} [{ret}],"
                    f" thread set to {CREWED_TAG}")
             log_msg(msg)
+            r8gptDB.add_event(playerTrains[ret].latest_update_time, ctx.author.display_name,
+                              'CLOCK_IN', symbol, event_db)
+            r8gptDB.save_db(DB_FILENAME, event_db)
         else:
             msg = f"⚠️ symbol {symbol} not found"
         await thread.send(msg)
@@ -254,6 +261,9 @@ async def clock_out(ctx: discord.ApplicationContext):
                        f"{idleTrains[train].symbol}, {CREWED_TAG} tag removed from thread.")
                 await thread.send(msg)
                 log_msg(msg)
+                r8gptDB.add_event(idleTrains[train].latest_update_time, ctx.author.display_name,
+                                  'CLOCK_OUT', idleTrains[train].symbol, event_db)
+                r8gptDB.save_db(DB_FILENAME, event_db)
                 return
         else:
             ctx.respond(f"⚠️ Unable to clock out; are you sure you are clocked in?", ephemeral=True)
@@ -458,9 +468,12 @@ async def scan_world_state():
 @bot.event
 async def on_ready():
     global fp
+    global event_db
 
     print(f"✅ Bot is ready: {bot.user}")
-    fp = open(LOG_FILENAME,'w')     # filepointer to log file
+    fp = open(LOG_FILENAME, 'w')     # filepointer to log file
+    event_db = r8gptDB.load_db(DB_FILENAME)
+    print(event_db)
     scan_world_state.start()
 
 bot.run(BOT_TOKEN)
