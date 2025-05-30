@@ -5,8 +5,8 @@ from discord import option
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta
 import os
-from r8gptInclude import WORLDSAVE_PATH, DB_FILENAME, LOG_FILENAME, AI_ALERT_TIME, PLAYER_ALERT_TIME, BOT_TOKEN, \
-    CH_LOG, CH_ALERT, CREWED_TAG
+from r8gptInclude import (WORLDSAVE_PATH, DB_FILENAME, LOG_FILENAME, AI_ALERT_TIME, PLAYER_ALERT_TIME, REMINDER_TIME,
+                          BOT_TOKEN, CH_LOG, CH_ALERT, CREWED_TAG, COMPLETED_TAG, AVAILABLE_TAG, LOCATION_DB)
 import r8gptDB
 
 
@@ -19,7 +19,6 @@ intents.message_content = True
 SAVENAME = WORLDSAVE_PATH + '/Auto Save World.xml'
 DIESEL_ENGINE = 'US_DieselEngine'
 event_db = list()
-
 
 
 class Car:
@@ -58,7 +57,8 @@ class Cut:
 
 
 class Train:
-    def __init__(self, id_number, symbol, lead_num, train_type, num_units, engineer, latest_update_time, route, track, dist):
+    def __init__(self, id_number, symbol, lead_num, train_type, num_units, engineer, latest_update_time,
+                 route, track, dist):
         self.id_number = id_number      # Unique ID
         self.symbol = symbol            # Train tag symbol
         self.lead_num = lead_num        # Lead loco number
@@ -124,6 +124,7 @@ aiTrains2 = dict()
 playerTrains = dict()
 playerTrains2 = dict()
 player_list = dict()
+watched_trains = dict()
 nbr_player_moving = 0
 last_modified = 0
 global fp
@@ -195,83 +196,140 @@ def log_msg(msg):
 
 bot = discord.Bot(intents=intents)
 
-# clock_in command
-@bot.slash_command(name='clock_in', description=f"Clock in for a job")
-@option("symbol", description="Train symbol", required=True)
-async def clock_in(ctx: discord.ApplicationContext, symbol: str):
+
+@bot.slash_command(name='test', description="test a command")
+async def test(ctx: discord.ApplicationContext):
     thread = ctx.channel
-    if not isinstance(thread, discord.Thread) or not isinstance(thread.parent, discord.ForumChannel):
-        await ctx.respond("❌ This command must be used inside a forum thread.", ephemeral=True)
-        return
+    await thread.send("tested")
+
+
+@bot.slash_command(name='crew', description=f"Crew a train")
+@option("symbol", description="Train symbol", required=True)
+# NOTE: This command must be executed within a forum thread
+async def crew(ctx: discord.ApplicationContext, symbol: str):
+    thread = ctx.channel
     forum_channel = thread.parent
-    matching_tag = next((tag for tag in forum_channel.available_tags if tag.name.lower() == CREWED_TAG.lower()), None)
-    if not matching_tag:
-        await ctx.respond(f"❌ Tag '{CREWED_TAG}' not found in this forum.", ephemeral=True)
+    tag_to_add = discord.utils.find(lambda t: t.name.lower() == CREWED_TAG.lower(), forum_channel.available_tags)
+    tag_to_remove = discord.utils.find(lambda t: t.name.lower() == AVAILABLE_TAG.lower(), forum_channel.available_tags)
+    if not tag_to_add or not tag_to_remove:
+        await ctx.respond(f'[r8GPT] **ERROR**: Tag `{CREWED_TAG}` and/or {AVAILABLE_TAG} not found in this forum.'
+                          , ephemeral=True)
         return
-    current_tag_ids = thread.applied_tags or []
-    if matching_tag in current_tag_ids:
-        await ctx.respond(f"ℹ️ Tag **{matching_tag.name}** is already applied.", ephemeral=True)
+    current_tags = thread.applied_tags or []
+    if tag_to_add in current_tags:
+        await ctx.respond(f'This job is already marked `{tag_to_add.name}` - unable to crew.', ephemeral=True)
         return
-    new_tags = current_tag_ids + [matching_tag]
     try:
-        await ctx.respond(f"Attempting to clock in for {symbol}", ephemeral=True)
+        await ctx.respond(f'Attempting to crew train {symbol}', ephemeral=True)
         ret = find_player_train(symbol)
         if ret != -1:
             add_player_train(ret, ctx.author.mention)
-            await thread.edit(applied_tags=new_tags)
-            msg = (f"[{playerTrains[ret].latest_update_time}] {ctx.author.display_name} crewed {symbol} [{ret}],"
-                   f" thread set to {CREWED_TAG}")
+            if tag_to_add not in current_tags:
+                current_tags.append(tag_to_add)
+            if tag_to_remove in current_tags:
+                current_tags.remove(tag_to_remove)
+            msg = f'[{playerTrains[ret].latest_update_time}] {ctx.author.display_name} crewed {symbol}'
+            await thread.edit(applied_tags=current_tags)
             log_msg(msg)
             r8gptDB.add_event(playerTrains[ret].latest_update_time, ctx.author.display_name,
-                              'CLOCK_IN', symbol, event_db)
+                              'CREW', symbol, event_db)
             r8gptDB.save_db(DB_FILENAME, event_db)
         else:
-            msg = f"⚠️ symbol {symbol} not found"
+            msg = f'**UNABLE TO CREW, Train {symbol} not found**'
         await thread.send(msg)
     except discord.Forbidden:
-        await ctx.respond("❌ I don't have permission to edit this thread.", ephemeral=True)
+        await ctx.respond('[r8GPT] **ERROR**: I do not have permission to edit this thread.', ephemeral=True)
     except Exception as e:
-        await ctx.respond(f"⚠️ Unexpected error: {e}", ephemeral=True)
+        await ctx.respond(f'[r8GPT] **ERROR**: {e}', ephemeral=True)
 
 
-# clock_out command
-@bot.slash_command(name='clock_out', description=f"Clock out from a job")
-async def clock_out(ctx: discord.ApplicationContext):
+@bot.slash_command(name='tie_down', description=f"Tie down a train")
+@option("symbol", description="Train symbol", required=False)
+async def tie_down(ctx: discord.ApplicationContext):
     thread = ctx.channel
     if not isinstance(thread, discord.Thread) or not isinstance(thread.parent, discord.ForumChannel):
-        await ctx.respond("❌ This command must be used inside a forum thread.", ephemeral=True)
+        await ctx.respond('This command must be used inside a forum thread.', ephemeral=True)
         return
     forum_channel = thread.parent
-    matching_tag = next((tag for tag in forum_channel.available_tags if tag.name.lower() == CREWED_TAG.lower()), None)
-    if not matching_tag:
-        await ctx.respond(f"❌ Tag '{CREWED_TAG}' not found in this forum.", ephemeral=True)
+    tag_to_add = discord.utils.find(lambda t: t.name.lower() == AVAILABLE_TAG.lower(), forum_channel.available_tags)
+    tag_to_remove = discord.utils.find(lambda t: t.name.lower() == CREWED_TAG.lower(), forum_channel.available_tags)
+    if not tag_to_add or not tag_to_remove:
+        await ctx.respond(f'[r8GPT] **ERROR**: Tag `{CREWED_TAG}` and/or {AVAILABLE_TAG} not found in this forum.'
+                          , ephemeral=True)
+    current_tags = thread.applied_tags or []
+    if tag_to_remove not in current_tags:
+        await ctx.respond(f'Tag **{tag_to_remove.name}** is not currently applied.', ephemeral=True)
         return
-    current_tag_ids = thread.applied_tags or []
-    if matching_tag not in current_tag_ids:
-        await ctx.respond(f"ℹ️ Tag **{matching_tag.name}** is not currently applied.", ephemeral=True)
-        return
-    new_tags = [tid for tid in current_tag_ids if tid != matching_tag]
     try:
-        await ctx.respond(f"attempting to clock out...", ephemeral=True)
+        await ctx.respond(f'Attempting to tie down', ephemeral=True)
         for train in playerTrains:
             if playerTrains[train].engineer == ctx.author.mention:
-                await thread.edit(applied_tags=new_tags)
                 del_player_train(train, ctx.author.mention)
-                msg = (f"[{idleTrains[train].latest_update_time}] {ctx.author.display_name} clocked out from train "
-                       f"{idleTrains[train].symbol}, {CREWED_TAG} tag removed from thread.")
+                if tag_to_add not in current_tags:
+                    current_tags.append(tag_to_add)
+                if tag_to_remove in current_tags:
+                    current_tags.remove(tag_to_remove)
+                msg = (f'[{idleTrains[train].latest_update_time}] {ctx.author.display_name} tied down train '
+                       f'{idleTrains[train].symbol}')
                 await thread.send(msg)
+                await thread.edit(applied_tags=current_tags)
                 log_msg(msg)
                 r8gptDB.add_event(idleTrains[train].latest_update_time, ctx.author.display_name,
-                                  'CLOCK_OUT', idleTrains[train].symbol, event_db)
+                                  'TIED_DOWN', idleTrains[train].symbol, event_db)
                 r8gptDB.save_db(DB_FILENAME, event_db)
                 return
         else:
-            ctx.respond(f"⚠️ Unable to clock out; are you sure you are clocked in?", ephemeral=True)
+            await ctx.respond(f'Unable to clock out; are you sure you are clocked in?', ephemeral=True)
 
     except discord.Forbidden:
-        await ctx.respond("❌ I don't have permission to edit this thread.", ephemeral=True)
+        await ctx.respond('[r8GPT] does not have permission to edit this thread.', ephemeral=True)
     except Exception as e:
-        await ctx.respond(f"⚠️ Unexpected error: {e}", ephemeral=True)
+        await ctx.respond(f'[r8GPT] Unexpected error: {e}', ephemeral=True)
+
+
+@bot.slash_command(name='complete', description=f"Mark a job complete")
+@option("symbol", description="Train symbol", required=True)
+# NOTE: This command must be executed within a forum thread
+async def complete(ctx: discord.ApplicationContext, symbol: str):
+    thread = ctx.channel
+    forum_channel = thread.parent
+    tag_to_add = discord.utils.find(lambda t: t.name.lower() == COMPLETED_TAG.lower(), forum_channel.available_tags)
+    tag1_to_remove = discord.utils.find(lambda t: t.name.lower() == CREWED_TAG.lower(), forum_channel.available_tags)
+    tag2_to_remove = discord.utils.find(lambda t: t.name.lower() == AVAILABLE_TAG.lower(), forum_channel.available_tags)
+    if not tag_to_add or not tag1_to_remove or not tag2_to_remove:
+        await ctx.respond(f'[r8GPT] **ERROR**: Tag `{CREWED_TAG}` and/or {AVAILABLE_TAG} and/or {COMPLETED_TAG}'
+                          f' not found in this forum.', ephemeral=True)
+        return
+    current_tags = thread.applied_tags or []
+    if tag_to_add in current_tags:
+        await ctx.respond(f'This job is already marked `{tag_to_add.name}` - unable to change.', ephemeral=True)
+        return
+    try:
+        await ctx.respond(f'Attempting to mark as completed: {symbol}', ephemeral=True)
+        for train in playerTrains:
+            if playerTrains[train].engineer == ctx.author.mention:
+                del_player_train(train, ctx.author.mention)
+                if tag_to_add not in current_tags:
+                    current_tags.append(tag_to_add)
+                if tag1_to_remove in current_tags:
+                    current_tags.remove(tag1_to_remove)
+                if tag2_to_remove in current_tags:
+                    current_tags.remove(tag2_to_remove)
+                msg = (f'[{idleTrains[train].latest_update_time}] {ctx.author.display_name} marked train '
+                       f'{idleTrains[train].symbol} {COMPLETED_TAG}.')
+                await thread.send(msg)
+                await thread.edit(applied_tags=current_tags)
+                log_msg(msg)
+                r8gptDB.add_event(idleTrains[train].latest_update_time, ctx.author.display_name,
+                                  'MARKED_COMPLETE', idleTrains[train].symbol, event_db)
+                r8gptDB.save_db(DB_FILENAME, event_db)
+                return
+        else:
+            await ctx.respond(f'Unable to mark as complete; are you sure you are clocked in?', ephemeral=True)
+    except discord.Forbidden:
+        await ctx.respond('[r8GPT] **ERROR**: I do not have permission to edit this thread.', ephemeral=True)
+    except Exception as e:
+        await ctx.respond(f'[r8GPT] **ERROR**: {e}', ephemeral=True)
 
 
 @bot.slash_command(name="list_ai", description="List current AI trains")
@@ -282,12 +340,19 @@ async def list_ai(ctx: discord.ApplicationContext):
     await ctx.respond(msg, ephemeral=True)
 
 
-@bot.slash_command(name="list_idle", description="List current AI trains")
-async def list_idle(ctx: discord.ApplicationContext):
+@bot.slash_command(name="list_stuck", description="List current stuck trains")
+async def list_stuck(ctx: discord.ApplicationContext):
     msg = ''
-    for train in idleTrains:
-        msg += (f'[{idleTrains[train].symbol}], Lead# {idleTrains[train].lead_num}, '
-                f'Units: {idleTrains[train].num_units}\n')
+    for train in watched_trains:
+        if train in aiTrains:
+            msg += (f'[{aiTrains[train].symbol}], Lead# {aiTrains[train].lead_num}, '
+                    f'Units: {aiTrains[train].num_units}\n')
+        elif train in playerTrains:
+            msg += (f'[{playerTrains[train].symbol}], Lead# {playerTrains[train].lead_num}, '
+                    f'Units: {playerTrains[train].num_units}\n')
+        else:
+            return
+
     await ctx.respond(msg, ephemeral=True)
 
 
@@ -300,7 +365,7 @@ async def list_player(ctx: discord.ApplicationContext):
     await ctx.respond(msg, ephemeral=True)
 
 
-@tasks.loop(seconds=30)
+@tasks.loop(seconds=60)
 async def scan_world_state():
     global last_modified
     global fp
@@ -397,14 +462,28 @@ async def scan_world_state():
                     # AI train HAS NOT MOVED since last update
                     nbr_ai_stopped += 1
                     td = aiTrains2[trainID].latest_update_time - aiTrains[trainID].latest_update_time
+                    sub = LOCATION_DB[int(aiTrains2[trainID].route[0])]
                     msg = ''
                     if td > timedelta(minutes=AI_ALERT_TIME):
-                        msg = f'**POSSIBLE STUCK TRAIN**: '
-                        msg += f'[AI] {aiTrains2[trainID].symbol} ({trainID}) has not moved for {td}, '
-                        msg += f'Location: {aiTrains[trainID].route} / {aiTrains[trainID].track}\n-----'
-                        await send_ch_msg(CH_ALERT, msg)
+                        if trainID not in watched_trains:
+                            watched_trains[trainID] = [aiTrains[trainID].latest_update_time, 1]
+                            msg = f'**POSSIBLE STUCK TRAIN**: '
+                            msg += (f'[AI] {aiTrains2[trainID].symbol} ({trainID})'
+                                    f' has not moved for {td}, Location: {sub} / '
+                                    f'{aiTrains2[trainID].track}\n-----')
+                            await send_ch_msg(CH_ALERT, msg)
+                        elif ((aiTrains2[trainID].latest_update_time - watched_trains[trainID][0])
+                              // watched_trains[trainID][1] > timedelta(minutes=REMINDER_TIME)):
+                            watched_trains[trainID][1] += 1
+                            msg = f'**STUCK TRAIN REMINDER # {watched_trains[trainID][1]}**: '
+                            msg += (f'[AI] {aiTrains2[trainID].symbol} ({trainID})'
+                                    f' has not moved for {td}, Location: {sub} / '
+                                    f'{aiTrains2[trainID].track}\n-----')
+                            await send_ch_msg(CH_ALERT, msg)
+                        else:
+                            pass    # We have already notified at least once, now backing off before another notice
                     print(f'[AI] {aiTrains2[trainID].symbol} ({trainID}) has not moved for {td}, '
-                          f'Location: {aiTrains[trainID].route} / {aiTrains[trainID].track}')
+                          f'Location: {sub} / {aiTrains[trainID].track}')
                 else:
                     print(f'something odd in comparing these two:\n{aiTrains[trainID]}\n{aiTrains2[trainID]}')
             else:
@@ -424,6 +503,8 @@ async def scan_world_state():
                         or playerTrains2[trainID].track != playerTrains[trainID].track \
                         or playerTrains2[trainID].dist != playerTrains[trainID].dist:
                     # player train HAS MOVED since last update
+                    if trainID in watched_trains:
+                        del watched_trains[trainID]     # No longer need to watch
                     nbr_player_moving += 1
                     playerTrains[trainID].latest_update_time = playerTrains2[trainID].latest_update_time
 
@@ -433,16 +514,28 @@ async def scan_world_state():
                     # Player train HAS NOT MOVED since last update
                     nbr_player_stopped += 1
                     td = playerTrains2[trainID].latest_update_time - playerTrains[trainID].latest_update_time
+                    sub = LOCATION_DB[int(playerTrains2[trainID].route[0])]
                     if td > timedelta(minutes=PLAYER_ALERT_TIME):
-                        msg = f'**POSSIBLE STUCK TRAIN**: '
-                        msg += (f'[{playerTrains2[trainID].engineer}] {playerTrains2[trainID].symbol} ({trainID})'
-                                f' has not moved for {td}, Location: {playerTrains2[trainID].route} / '
-                                f'{playerTrains2[trainID].track}\n-----')
-                        await send_ch_msg(CH_ALERT, msg)
+                        if trainID not in watched_trains:
+                            watched_trains[trainID] = [playerTrains[trainID].latest_update_time, 2]
+                            msg = f'**POSSIBLE STUCK TRAIN**: '
+                            msg += (f'[{playerTrains2[trainID].engineer}] {playerTrains2[trainID].symbol} ({trainID})'
+                                    f' has not moved for {td}, Location: {sub} / '
+                                    f'{playerTrains2[trainID].track}\n-----')
+                            await send_ch_msg(CH_ALERT, msg)
+                        elif ((playerTrains2[trainID].latest_update_time - watched_trains[trainID][0])
+                              // watched_trains[trainID][1] > timedelta(minutes=REMINDER_TIME)):
+                            watched_trains[trainID][1] += 1
+                            msg = f'**STUCK TRAIN REMINDER # {watched_trains[trainID][1]}**: '
+                            msg += (f'[{playerTrains2[trainID].engineer}] {playerTrains2[trainID].symbol} ({trainID})'
+                                    f' has not moved for {td}, Location: {sub} / '
+                                    f'{playerTrains2[trainID].track}\n-----')
+                            await send_ch_msg(CH_ALERT, msg)
+                        else:
+                            pass    # We have already notified at least once, now backing off before another notice
                     print(f'[Player: {playerTrains2[trainID].engineer}] {playerTrains2[trainID].symbol} ({trainID}) '
                           f'has not moved for {td}'
-                          f' Location: {playerTrains[trainID].route} / {playerTrains[trainID].track}')
-
+                          f' Location: {sub} / {playerTrains[trainID].track}')
                 else:
                     print(f'something odd in comparing these two:\n{playerTrains[trainID]}\n{playerTrains2[trainID]}')
 
@@ -471,7 +564,7 @@ async def on_ready():
     global event_db
 
     print(f"✅ Bot is ready: {bot.user}")
-    fp = open(LOG_FILENAME, 'w')     # filepointer to log file
+    fp = open(LOG_FILENAME, 'w')     # file pointer to log file
     event_db = r8gptDB.load_db(DB_FILENAME)
     print(event_db)
     scan_world_state.start()

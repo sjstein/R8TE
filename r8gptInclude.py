@@ -20,6 +20,7 @@ try:
     # r8gpt options
     AI_ALERT_TIME = int(config['r8gpt']['ai_alert_time'])
     PLAYER_ALERT_TIME = int(config['r8gpt']['player_alert_time'])
+    REMINDER_TIME = int(config['r8gpt']['reminder_time'])
 
     # Discord options
     BOT_TOKEN = config['discord']['bot_token']
@@ -28,6 +29,19 @@ try:
         CH_LOG = 'none'
     CH_ALERT = config['discord']['ch_alert']
     CREWED_TAG = config['discord']['crewed_tag']
+    AVAILABLE_TAG = config['discord']['available_tag']
+    COMPLETED_TAG = config['discord']['completed_tag']
+
+    LOCATION_DB = {100: 'Mojave',
+                   110: 'Needles',
+                   120: 'Cajon',
+                   130: 'Seligman',
+                   140: 'CSX A-line',
+                   150: 'Barstow/Yermo',
+                   200: 'San Bernardino',
+                   250: 'Bakersfield',
+                   340: 'Modesto'}
+
 
 except KeyError as e:
     print(f'\nr8dium ({__name__}.py): FATAL exception, unable to find [{e}] in configuration file')
