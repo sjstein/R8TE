@@ -128,6 +128,7 @@ watched_trains = dict()
 nbr_player_moving = 0
 last_modified = 0
 global fp
+global last_world_datetime
 
 
 def update_world_state(ai_trains, player_trains, idle_trains):
@@ -170,11 +171,12 @@ def find_player_train(train_tag):
     return -1
 
 
-def add_player_train(train_id, player_id):
+def add_player_train(train_id, player_id, add_time):
     if train_id not in player_list:
         player_list[player_id] = train_id
         playerTrains[train_id] = idleTrains[train_id]
         playerTrains[train_id].engineer = player_id
+        playerTrains[train_id].latest_update_time = add_time
         del idleTrains[train_id]
 
 
@@ -207,6 +209,8 @@ async def test(ctx: discord.ApplicationContext):
 @option("symbol", description="Train symbol", required=True)
 # NOTE: This command must be executed within a forum thread
 async def crew(ctx: discord.ApplicationContext, symbol: str):
+    global last_world_datetime
+
     thread = ctx.channel
     forum_channel = thread.parent
     tag_to_add = discord.utils.find(lambda t: t.name.lower() == CREWED_TAG.lower(), forum_channel.available_tags)
@@ -223,7 +227,7 @@ async def crew(ctx: discord.ApplicationContext, symbol: str):
         await ctx.respond(f'Attempting to crew train {symbol}', ephemeral=True)
         ret = find_player_train(symbol)
         if ret != -1:
-            add_player_train(ret, ctx.author.mention)
+            add_player_train(ret, ctx.author.mention, last_world_datetime)
             if tag_to_add not in current_tags:
                 current_tags.append(tag_to_add)
             if tag_to_remove in current_tags:
@@ -234,9 +238,9 @@ async def crew(ctx: discord.ApplicationContext, symbol: str):
             r8gptDB.add_event(playerTrains[ret].latest_update_time, ctx.author.display_name,
                               'CREW', symbol, event_db)
             r8gptDB.save_db(DB_FILENAME, event_db)
+            await thread.send(msg)
         else:
-            msg = f'**UNABLE TO CREW, Train {symbol} not found**'
-        await thread.send(msg)
+            await ctx.respond(f'**UNABLE TO CREW, Train {symbol} not found**')
     except discord.Forbidden:
         await ctx.respond('[r8GPT] **ERROR**: I do not have permission to edit this thread.', ephemeral=True)
     except Exception as e:
@@ -244,8 +248,8 @@ async def crew(ctx: discord.ApplicationContext, symbol: str):
 
 
 @bot.slash_command(name='tie_down', description=f"Tie down a train")
-@option("symbol", description="Train symbol", required=False)
-async def tie_down(ctx: discord.ApplicationContext):
+@option("location", description="Tie-down location", required=True)
+async def tie_down(ctx: discord.ApplicationContext, location: str):
     thread = ctx.channel
     if not isinstance(thread, discord.Thread) or not isinstance(thread.parent, discord.ForumChannel):
         await ctx.respond('This command must be used inside a forum thread.', ephemeral=True)
@@ -270,7 +274,7 @@ async def tie_down(ctx: discord.ApplicationContext):
                 if tag_to_remove in current_tags:
                     current_tags.remove(tag_to_remove)
                 msg = (f'[{idleTrains[train].latest_update_time}] {ctx.author.display_name} tied down train '
-                       f'{idleTrains[train].symbol}')
+                       f'{idleTrains[train].symbol} at {location}')
                 await thread.send(msg)
                 await thread.edit(applied_tags=current_tags)
                 log_msg(msg)
@@ -360,15 +364,18 @@ async def list_stuck(ctx: discord.ApplicationContext):
 async def list_player(ctx: discord.ApplicationContext):
     msg = ''
     for train in playerTrains:
-        msg += (f'[{playerTrains[train].symbol}], Lead# {playerTrains[train].lead_num}, '
-                f'Units: {playerTrains[train].num_units}\n')
+        msg += (f'{playerTrains[train].engineer} : [{playerTrains[train].symbol}]# {playerTrains[train].lead_num}, '
+                f'total cars: {playerTrains[train].num_units}\n')
+    if len(msg) < 1:
+        msg = 'No player trains being tracked at present.'
     await ctx.respond(msg, ephemeral=True)
 
 
-@tasks.loop(seconds=60)
+@tasks.loop(seconds=90)
 async def scan_world_state():
     global last_modified
     global fp
+    global last_world_datetime
 
     async def send_ch_msg(ch_name, ch_msg):
         """
@@ -401,9 +408,9 @@ async def scan_world_state():
     if len(idleTrains) == 0:    # No idle trains means we need to read initial state
         last_modified = os.stat(SAVENAME).st_mtime
         last_world_datetime = update_world_state(aiTrains, playerTrains, idleTrains)
-        msg = (f'Loading first world save created on {last_world_datetime}, '
+        msg = (f'{last_world_datetime} Initializing: '
                f'AI trains found: {len(aiTrains)}, '
-               f'Idle trains found: {len(idleTrains)}\n-----')
+               f'Idle trains found: {len(idleTrains)}')
         await send_ch_msg(CH_LOG, msg)
         
     if os.stat(SAVENAME).st_mtime != last_modified:     # Has file timestamp changed since last iteration?
@@ -424,14 +431,14 @@ async def scan_world_state():
 
         for tid in ai_trains_removed:
             nbr_ai_removed += 1
-            msg = f'Train removed: [AI] {aiTrains[tid].symbol} ({tid})'
+            msg = f'{last_world_datetime} Train removed: [AI] {aiTrains[tid].symbol} ({tid})'
             await send_ch_msg(CH_LOG, msg)
             print(msg)
             del aiTrains[tid]
 
         for tid in player_trains_removed:
             nbr_player_removed += 1
-            msg = f'Train removed: [{playerTrains[tid].engineer}] {playerTrains[tid].symbol} ({tid})'
+            msg = f'{last_world_datetime} Train removed: [{playerTrains[tid].engineer}] {playerTrains[tid].symbol} ({tid})'
             await send_ch_msg(CH_LOG, msg)
             print(msg)
             del playerTrains[tid]
@@ -447,7 +454,7 @@ async def scan_world_state():
         for trainID in aiTrains2:
             if trainID in aiTrains:
                 if aiTrains2[trainID].symbol != aiTrains[trainID].symbol:
-                    print(f'TRAIN RE-TAGGED: {trainID} has changed tags since last update '
+                    print(f'{last_world_datetime} Train re-tagged: {trainID} has changed tags since last update '
                           f'({aiTrains[trainID].symbol} -> {aiTrains2[trainID].symbol}); Updating record.')
                     aiTrains[trainID] = aiTrains2[trainID]
                 elif aiTrains2[trainID].route != aiTrains[trainID].route \
@@ -467,18 +474,18 @@ async def scan_world_state():
                     if td > timedelta(minutes=AI_ALERT_TIME):
                         if trainID not in watched_trains:
                             watched_trains[trainID] = [aiTrains[trainID].latest_update_time, 1]
-                            msg = f'**POSSIBLE STUCK TRAIN**: '
+                            msg = f'{last_world_datetime} **POSSIBLE STUCK TRAIN**: '
                             msg += (f'[AI] {aiTrains2[trainID].symbol} ({trainID})'
                                     f' has not moved for {td}, Location: {sub} / '
-                                    f'{aiTrains2[trainID].track}\n-----')
+                                    f'{aiTrains2[trainID].track}')
                             await send_ch_msg(CH_ALERT, msg)
                         elif ((aiTrains2[trainID].latest_update_time - watched_trains[trainID][0])
                               // watched_trains[trainID][1] > timedelta(minutes=REMINDER_TIME)):
                             watched_trains[trainID][1] += 1
-                            msg = f'**STUCK TRAIN REMINDER # {watched_trains[trainID][1]}**: '
+                            msg = f'{last_world_datetime} **STUCK TRAIN REMINDER # {watched_trains[trainID][1]}**: '
                             msg += (f'[AI] {aiTrains2[trainID].symbol} ({trainID})'
                                     f' has not moved for {td}, Location: {sub} / '
-                                    f'{aiTrains2[trainID].track}\n-----')
+                                    f'{aiTrains2[trainID].track}')
                             await send_ch_msg(CH_ALERT, msg)
                         else:
                             pass    # We have already notified at least once, now backing off before another notice
@@ -488,14 +495,15 @@ async def scan_world_state():
                     print(f'something odd in comparing these two:\n{aiTrains[trainID]}\n{aiTrains2[trainID]}')
             else:
                 nbr_ai_added += 1
-                print(f'TRAIN SPAWNED: {aiTrains2[trainID].symbol} ({trainID})')
+                msg = f'{last_world_datetime} Train spawned: {aiTrains2[trainID].symbol} ({trainID})'
                 aiTrains[trainID] = aiTrains2[trainID]
-
+                print(msg)
+                await send_ch_msg(CH_LOG, msg)
         # Check player train status
         for trainID in playerTrains2:
             if trainID in playerTrains:
                 if playerTrains2[trainID].symbol != playerTrains[trainID].symbol:
-                    print(f'PLAYER TRAIN RE-TAGGED: {trainID} has changed tags since last update '
+                    print(f'{last_world_datetime} Player train re-tagged: {trainID} has changed tags since last update '
                           f'({playerTrains[trainID].symbol} -> {playerTrains2[trainID].symbol}); Updating record.')
                     playerTrains[trainID] = playerTrains2[trainID]
 
@@ -518,18 +526,18 @@ async def scan_world_state():
                     if td > timedelta(minutes=PLAYER_ALERT_TIME):
                         if trainID not in watched_trains:
                             watched_trains[trainID] = [playerTrains[trainID].latest_update_time, 2]
-                            msg = f'**POSSIBLE STUCK TRAIN**: '
+                            msg = f'{last_world_datetime} **POSSIBLE STUCK TRAIN**: '
                             msg += (f'[{playerTrains2[trainID].engineer}] {playerTrains2[trainID].symbol} ({trainID})'
                                     f' has not moved for {td}, Location: {sub} / '
-                                    f'{playerTrains2[trainID].track}\n-----')
+                                    f'{playerTrains2[trainID].track}')
                             await send_ch_msg(CH_ALERT, msg)
                         elif ((playerTrains2[trainID].latest_update_time - watched_trains[trainID][0])
                               // watched_trains[trainID][1] > timedelta(minutes=REMINDER_TIME)):
                             watched_trains[trainID][1] += 1
-                            msg = f'**STUCK TRAIN REMINDER # {watched_trains[trainID][1]}**: '
+                            msg = f'{last_world_datetime} **STUCK TRAIN REMINDER # {watched_trains[trainID][1]}**: '
                             msg += (f'[{playerTrains2[trainID].engineer}] {playerTrains2[trainID].symbol} ({trainID})'
                                     f' has not moved for {td}, Location: {sub} / '
-                                    f'{playerTrains2[trainID].track}\n-----')
+                                    f'{playerTrains2[trainID].track}')
                             await send_ch_msg(CH_ALERT, msg)
                         else:
                             pass    # We have already notified at least once, now backing off before another notice
@@ -538,24 +546,17 @@ async def scan_world_state():
                           f' Location: {sub} / {playerTrains[trainID].track}')
                 else:
                     print(f'something odd in comparing these two:\n{playerTrains[trainID]}\n{playerTrains2[trainID]}')
-
             else:
                 nbr_player_added += 1
-                print(f'TRAIN SPAWNED: {playerTrains2[trainID][1]} ({trainID})')
+                print(f'Train added: {playerTrains2[trainID][1]} ({trainID})')
                 playerTrains[trainID] = playerTrains2[trainID]
-        msg = f'Updating world from {last_world_datetime}\n'
-        msg += (f'AI Trains: {nbr_ai_moving} moving, {nbr_ai_stopped} stopped, {nbr_ai_removed} removed, '
-                f'{nbr_ai_added} added.\n')
-        msg += (f'Player trains: {nbr_player_moving} moving, {nbr_player_stopped} stopped, '
-                f'{nbr_player_removed} removed, {nbr_player_added} added.\n')
-        msg += f'Idle trains: {len(idleTrains)} total.\n-----'
+
+        msg = (f'{last_world_datetime} Summary: AI ({nbr_ai_moving}M, {nbr_ai_stopped}S, +{nbr_ai_added}, '
+               f'-{nbr_ai_removed}) | Player ({nbr_player_moving}M, {nbr_player_stopped}S) | Idle ({len(idleTrains)})')
         await send_ch_msg(CH_LOG, msg)
-        print(f'AI Summary: {nbr_ai_moving} trains moving, {nbr_ai_stopped} stopped, {nbr_ai_removed} removed, {nbr_ai_added} added.')
-        print(f'Player summary: {nbr_player_moving} trains moving, {nbr_player_stopped} stopped,'
-              f' {nbr_player_added} added.')
+        print(msg)
+        aiTrains2.clear()
         playerTrains2.clear()
-        print(playerTrains)
-        print('----')
 
 
 @bot.event
@@ -563,10 +564,9 @@ async def on_ready():
     global fp
     global event_db
 
-    print(f"✅ Bot is ready: {bot.user}")
+    print(f"[{datetime.now()}] {bot.user} starting")
     fp = open(LOG_FILENAME, 'w')     # file pointer to log file
     event_db = r8gptDB.load_db(DB_FILENAME)
-    print(event_db)
     scan_world_state.start()
 
 bot.run(BOT_TOKEN)
