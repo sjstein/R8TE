@@ -438,6 +438,8 @@ async def scan_world_state():
             msg = f'{last_world_datetime} Train removed: [AI] {aiTrains[tid].symbol} ({tid})'
             await send_ch_msg(CH_LOG, msg)
             print(msg)
+            if tid in watched_trains:
+                del watched_trains[tid]  # No longer need to watch
             del aiTrains[tid]
 
         for tid in player_trains_removed:
@@ -445,6 +447,8 @@ async def scan_world_state():
             msg = f'{last_world_datetime} Train removed: [{playerTrains[tid].engineer}] {playerTrains[tid].symbol} ({tid})'
             await send_ch_msg(CH_LOG, msg)
             print(msg)
+            if tid in watched_trains:
+                del watched_trains[tid]  # No longer need to watch
             del playerTrains[tid]
 
         nbr_ai_moving = 0
