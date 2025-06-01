@@ -9,6 +9,7 @@ from r8gptInclude import (WORLDSAVE_PATH, DB_FILENAME, LOG_FILENAME, AI_ALERT_TI
                           BOT_TOKEN, CH_LOG, CH_ALERT, CREWED_TAG, COMPLETED_TAG, AVAILABLE_TAG, LOCATION_DB)
 import r8gptDB
 
+DEBUG = True
 
 # Necessary Bot intents
 intents = discord.Intents.default()
@@ -258,7 +259,7 @@ async def tie_down(ctx: discord.ApplicationContext, location: str):
     tag_to_add = discord.utils.find(lambda t: t.name.lower() == AVAILABLE_TAG.lower(), forum_channel.available_tags)
     tag_to_remove = discord.utils.find(lambda t: t.name.lower() == CREWED_TAG.lower(), forum_channel.available_tags)
     if not tag_to_add or not tag_to_remove:
-        await ctx.respond(f'[r8GPT] **ERROR**: Tag `{CREWED_TAG}` and/or {AVAILABLE_TAG} not found in this forum.'
+        await ctx.respond(f'[r8GPT] **ERROR**: Tag `{CREWED_TAG}` and/or `{AVAILABLE_TAG}` not found in this forum.'
                           , ephemeral=True)
     current_tags = thread.applied_tags or []
     if tag_to_remove not in current_tags:
@@ -283,7 +284,7 @@ async def tie_down(ctx: discord.ApplicationContext, location: str):
                 r8gptDB.save_db(DB_FILENAME, event_db)
                 return
         else:
-            await ctx.respond(f'Unable to clock out; are you sure you are clocked in?', ephemeral=True)
+            await ctx.respond(f'Unable to tie down; are you sure you are crewing this job?', ephemeral=True)
 
     except discord.Forbidden:
         await ctx.respond('[r8GPT] does not have permission to edit this thread.', ephemeral=True)
@@ -293,15 +294,16 @@ async def tie_down(ctx: discord.ApplicationContext, location: str):
 
 @bot.slash_command(name='complete', description=f"Mark a job complete")
 @option("symbol", description="Train symbol", required=True)
+@option('notes', description='completion notes', required=False)
 # NOTE: This command must be executed within a forum thread
-async def complete(ctx: discord.ApplicationContext, symbol: str):
+async def complete(ctx: discord.ApplicationContext, symbol: str, notes: str):
     thread = ctx.channel
     forum_channel = thread.parent
     tag_to_add = discord.utils.find(lambda t: t.name.lower() == COMPLETED_TAG.lower(), forum_channel.available_tags)
     tag1_to_remove = discord.utils.find(lambda t: t.name.lower() == CREWED_TAG.lower(), forum_channel.available_tags)
     tag2_to_remove = discord.utils.find(lambda t: t.name.lower() == AVAILABLE_TAG.lower(), forum_channel.available_tags)
     if not tag_to_add or not tag1_to_remove or not tag2_to_remove:
-        await ctx.respond(f'[r8GPT] **ERROR**: Tag `{CREWED_TAG}` and/or {AVAILABLE_TAG} and/or {COMPLETED_TAG}'
+        await ctx.respond(f'[r8GPT] **ERROR**: Tag `{CREWED_TAG}` and/or `{AVAILABLE_TAG}` and/or {COMPLETED_TAG}'
                           f' not found in this forum.', ephemeral=True)
         return
     current_tags = thread.applied_tags or []
@@ -320,7 +322,9 @@ async def complete(ctx: discord.ApplicationContext, symbol: str):
                 if tag2_to_remove in current_tags:
                     current_tags.remove(tag2_to_remove)
                 msg = (f'[{idleTrains[train].latest_update_time}] {ctx.author.display_name} marked train '
-                       f'{idleTrains[train].symbol} {COMPLETED_TAG}.')
+                       f'{idleTrains[train].symbol} {COMPLETED_TAG}')
+                if len(notes) > 0:
+                    msg += f'. Notes: {notes}'
                 await thread.send(msg)
                 await thread.edit(applied_tags=current_tags)
                 log_msg(msg)
@@ -344,7 +348,7 @@ async def list_ai(ctx: discord.ApplicationContext):
     await ctx.respond(msg, ephemeral=True)
 
 
-@bot.slash_command(name="list_stuck", description="List current stuck trains")
+@bot.slash_command(name='list_stuck', description="List current stuck trains")
 async def list_stuck(ctx: discord.ApplicationContext):
     msg = ''
     for train in watched_trains:
@@ -360,7 +364,7 @@ async def list_stuck(ctx: discord.ApplicationContext):
     await ctx.respond(msg, ephemeral=True)
 
 
-@bot.slash_command(name="list_player", description="List current AI trains")
+@bot.slash_command(name='list_player', description="List current AI trains")
 async def list_player(ctx: discord.ApplicationContext):
     msg = ''
     for train in playerTrains:
@@ -462,6 +466,10 @@ async def scan_world_state():
                         or aiTrains2[trainID].dist != aiTrains[trainID].dist:
                     # AI train HAS MOVED since last update
                     nbr_ai_moving += 1
+                    if trainID in watched_trains:
+                        if DEBUG:
+                            print(f'Watched train: {aiTrains[trainID].symbol} is now on the move. Removing watch')
+                        del watched_trains[trainID]     # No longer need to watch
                     aiTrains[trainID].latest_update_time = aiTrains2[trainID].latest_update_time
                 elif aiTrains2[trainID].route == aiTrains[trainID].route \
                         and aiTrains2[trainID].track == aiTrains[trainID].track \
@@ -512,6 +520,8 @@ async def scan_world_state():
                         or playerTrains2[trainID].dist != playerTrains[trainID].dist:
                     # player train HAS MOVED since last update
                     if trainID in watched_trains:
+                        if DEBUG:
+                            print(f'Watched train: {playerTrains[trainID].symbol} is now on the move. Removing watch')
                         del watched_trains[trainID]     # No longer need to watch
                     nbr_player_moving += 1
                     playerTrains[trainID].latest_update_time = playerTrains2[trainID].latest_update_time
