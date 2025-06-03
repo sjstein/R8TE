@@ -126,7 +126,6 @@ playerTrains = dict()
 playerTrains2 = dict()
 player_list = dict()
 watched_trains = dict()
-nbr_player_moving = 0
 last_modified = 0
 global fp
 global last_world_datetime
@@ -344,23 +343,25 @@ async def complete(ctx: discord.ApplicationContext, symbol: str, notes: str):
 async def list_ai(ctx: discord.ApplicationContext):
     msg = ''
     for train in aiTrains:
-        msg += f'[{aiTrains[train].symbol}], Lead# {aiTrains[train].lead_num}, Units: {aiTrains[train].num_units}\n'
+        msg += f'{aiTrains[train].symbol} [{train}] # {aiTrains[train].lead_num}, Units: {aiTrains[train].num_units}\n'
     await ctx.respond(msg, ephemeral=True)
 
 
 @bot.slash_command(name='list_stuck', description="List current stuck trains")
 async def list_stuck(ctx: discord.ApplicationContext):
-    msg = ''
-    for train in watched_trains:
-        if train in aiTrains:
-            msg += (f'[{aiTrains[train].symbol}], Lead# {aiTrains[train].lead_num}, '
-                    f'Units: {aiTrains[train].num_units}\n')
-        elif train in playerTrains:
-            msg += (f'[{playerTrains[train].symbol}], Lead# {playerTrains[train].lead_num}, '
-                    f'Units: {playerTrains[train].num_units}\n')
-        else:
-            return
-
+    if len(watched_trains) < 1:
+        msg = 'No trains noted as stuck'
+    else:
+        msg = f'Problem train report for {len(watched_trains)} trains:\n'
+        for train in watched_trains:
+            if train in aiTrains:
+                msg += (f'{aiTrains[train].symbol} [{train}] # {aiTrains[train].lead_num}, '
+                       f'Units: {aiTrains[train].num_units}\n')
+            elif train in playerTrains:
+                msg += (f'{playerTrains[train].engineer} : {playerTrains[train].symbol} [{train}]'
+                       f' # {playerTrains[train].lead_num}, Units: {playerTrains[train].num_units}\n')
+            else:
+                return
     await ctx.respond(msg, ephemeral=True)
 
 
@@ -368,14 +369,30 @@ async def list_stuck(ctx: discord.ApplicationContext):
 async def list_player(ctx: discord.ApplicationContext):
     msg = ''
     for train in playerTrains:
-        msg += (f'{playerTrains[train].engineer} : [{playerTrains[train].symbol}]# {playerTrains[train].lead_num}, '
-                f'total cars: {playerTrains[train].num_units}\n')
+        msg += (f'{playerTrains[train].engineer} : {playerTrains[train].symbol} [{train}]'
+                f' # {playerTrains[train].lead_num}, total cars: {playerTrains[train].num_units}\n')
     if len(msg) < 1:
         msg = 'No player trains being tracked at present.'
     await ctx.respond(msg, ephemeral=True)
 
 
-@tasks.loop(seconds=90)
+@bot.slash_command(name='train_info', description="Display info of individual train")
+@option('tid', required=True, description='Train ID')
+async def train_info(ctx: discord.ApplicationContext, tid: str):
+    if tid in aiTrains:
+        msg = (f'{aiTrains[tid].engineer} : {aiTrains[tid].symbol} [{tid}]'
+               f' # {aiTrains[tid].lead_num}, total cars: {aiTrains[tid].num_units}, last move:'
+               f' {aiTrains[tid].latest_update_time}\n')
+    elif tid in playerTrains:
+        msg = (f'{playerTrains[tid].engineer} : {playerTrains[tid].symbol} [{tid}]'
+               f' # {playerTrains[tid].lead_num}, total cars: {playerTrains[tid].num_units}, last move:'
+               f' {playerTrains[tid].latest_update_time}\n')
+    else:
+        msg = f'Train {tid} not found.'
+    await ctx.respond(msg, ephemeral=True)
+
+
+@tasks.loop(seconds=10)
 async def scan_world_state():
     global last_modified
     global fp
@@ -471,6 +488,7 @@ async def scan_world_state():
                     # AI train HAS MOVED since last update
                     nbr_ai_moving += 1
                     if trainID in watched_trains:
+                        log_msg(f'Removing {trainID}: {aiTrains[trainID].symbol} from watched trains')
                         if DEBUG:
                             print(f'Watched train: {aiTrains[trainID].symbol} is now on the move. Removing watch')
                         del watched_trains[trainID]     # No longer need to watch
@@ -485,7 +503,8 @@ async def scan_world_state():
                     msg = ''
                     if td > timedelta(minutes=AI_ALERT_TIME):
                         if trainID not in watched_trains:
-                            watched_trains[trainID] = [aiTrains[trainID].latest_update_time, 1]
+                            watched_trains[trainID] = [aiTrains[trainID].latest_update_time, 0]
+                            log_msg(f'Added {trainID}: {aiTrains[trainID].symbol} to watched trains')
                             msg = f'{last_world_datetime} **POSSIBLE STUCK TRAIN**: '
                             msg += (f'[AI] {aiTrains2[trainID].symbol} ({trainID})'
                                     f' has not moved for {td}, Location: {sub} / '
@@ -524,6 +543,7 @@ async def scan_world_state():
                         or playerTrains2[trainID].dist != playerTrains[trainID].dist:
                     # player train HAS MOVED since last update
                     if trainID in watched_trains:
+                        log_msg(f'Removing {trainID}: {playerTrains[trainID].symbol} from watched trains')
                         if DEBUG:
                             print(f'Watched train: {playerTrains[trainID].symbol} is now on the move. Removing watch')
                         del watched_trains[trainID]     # No longer need to watch
@@ -566,7 +586,8 @@ async def scan_world_state():
                 playerTrains[trainID] = playerTrains2[trainID]
 
         msg = (f'{last_world_datetime} Summary: AI ({nbr_ai_moving}M, {nbr_ai_stopped}S, +{nbr_ai_added}, '
-               f'-{nbr_ai_removed}) | Player ({nbr_player_moving}M, {nbr_player_stopped}S) | Idle ({len(idleTrains)})')
+               f'-{nbr_ai_removed}) | Player ({nbr_player_moving}M, {nbr_player_stopped}S) | '
+               f'Watched ({len(watched_trains)}), Idle ({len(idleTrains)})')
         await send_ch_msg(CH_LOG, msg)
         print(msg)
         aiTrains2.clear()
