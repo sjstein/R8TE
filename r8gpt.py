@@ -434,7 +434,7 @@ async def train_info(ctx: discord.ApplicationContext, tid: str):
     await ctx.respond(msg, ephemeral=True)
 
 
-@tasks.loop(seconds=10)
+@tasks.loop(seconds=30)
 async def scan_world_state():
     global fp
     global last_world_datetime
