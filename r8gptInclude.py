@@ -18,6 +18,7 @@ try:
     WORLDSAVE_PATH = config['run8']['world_save_path']
 
     # r8gpt options
+    SCAN_TIME = int(config['r8gpt']['scan_time'])
     AI_ALERT_TIME = int(config['r8gpt']['ai_alert_time'])
     PLAYER_ALERT_TIME = int(config['r8gpt']['player_alert_time'])
     REMINDER_TIME = int(config['r8gpt']['reminder_time'])

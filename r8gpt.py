@@ -6,7 +6,8 @@ import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta
 import os
 from r8gptInclude import (WORLDSAVE_PATH, DB_FILENAME, LOG_FILENAME, AI_ALERT_TIME, PLAYER_ALERT_TIME, REMINDER_TIME,
-                          BOT_TOKEN, CH_LOG, CH_ALERT, CREWED_TAG, COMPLETED_TAG, AVAILABLE_TAG, LOCATION_DB)
+                          BOT_TOKEN, CH_LOG, CH_ALERT, CREWED_TAG, COMPLETED_TAG, AVAILABLE_TAG, LOCATION_DB,
+                          SCAN_TIME)
 import r8gptDB
 
 DEBUG = True
@@ -136,12 +137,12 @@ def location(route_id, track_index):
     return LOCATION_DB[sub], track
 
 
-trains = dict()             # Dict of all trains in the world
-latest_trains = dict()      # Dict of latest update of trains in the world
-player_list = dict()        # Dict of player controlled trains
-watched_trains = dict()     # Dict of trains which are stalled/stuck
+trains = dict()  # Dict of all trains in the world
+latest_trains = dict()  # Dict of latest update of trains in the world
+player_list = dict()  # Dict of player controlled trains
+watched_trains = dict()  # Dict of trains which are stalled/stuck
 
-global fp                   # File pointer to log
+global fp  # File pointer to log
 global last_world_datetime
 
 
@@ -236,6 +237,7 @@ def log_msg(msg):
 
 
 bot = discord.Bot(intents=intents)
+
 
 @bot.slash_command(name='crew', description=f"Crew a train")
 @option("symbol", description="Train symbol", required=True)
@@ -400,12 +402,14 @@ async def r8list(ctx: discord.ApplicationContext, list_type: str):
                         f' Units: {trains[tid].num_units}\n')
         elif list_type.lower() == 'stuck':
             if tid in watched_trains:
+                td = last_world_datetime - trains[tid].last_time_moved
                 if trains[tid].engineer.lower() != 'ai':
-                    msg += (f'{trains[tid].discord_name} : {trains[tid].symbol} [{tid}] # {trains[tid].lead_num},'
-                            f' # {trains[tid].lead_num}, Units: {trains[tid].num_units}\n')
+                    msg += f'{trains[tid].discord_name}'
                 else:
-                    msg += (f'{trains[tid].engineer} : {trains[tid].symbol} [{tid}] # {trains[tid].lead_num},'
-                            f' # {trains[tid].lead_num}, Units: {trains[tid].num_units}\n')
+                    msg += f'{trains[tid].engineer}'
+                msg += (f' : {trains[tid].symbol} [{tid}] # {trains[tid].lead_num},'
+                        f' # {trains[tid].lead_num}, Units: {trains[tid].num_units}, Stopped for: {td},'
+                        f' Location: {location(trains[tid].route, trains[tid].track)}\n')
         else:
             if trains[tid].engineer.lower() == 'none':
                 msg += (f'{trains[tid].symbol} [{tid}] # {trains[tid].lead_num},'
@@ -434,12 +438,12 @@ async def train_info(ctx: discord.ApplicationContext, tid: str):
     await ctx.respond(msg, ephemeral=True)
 
 
-@tasks.loop(seconds=30)
+@tasks.loop(seconds=SCAN_TIME)
 async def scan_world_state():
     global fp
     global last_world_datetime
     global trains
-    global last_modified    # designated global to keep track between calls
+    global last_modified  # designated global to keep track between calls
 
     async def send_ch_msg(ch_name, ch_msg):
         """
@@ -470,7 +474,7 @@ async def scan_world_state():
         return -1
 
     if len(trains) == 0:  # No trains means we need to read initial state
-        last_modified = os.stat(SAVENAME).st_mtime      # Time
+        last_modified = os.stat(SAVENAME).st_mtime  # Time
         last_world_datetime = update_world_state()
         msg = (f'** {last_world_datetime} Initializing ** '
                f'Total number of trains: {train_count("all")} (AI trains: {train_count("ai")},'
@@ -480,7 +484,7 @@ async def scan_world_state():
 
     if os.stat(SAVENAME).st_mtime != last_modified:  # Has file timestamp changed since last iteration?
         last_modified = os.stat(SAVENAME).st_mtime
-        last_trains = trains.copy()                 # Archive our current set of trains for comparison
+        last_trains = trains.copy()  # Archive our current set of trains for comparison
         last_world_datetime = update_world_state()  # Update the trains dictionary
 
         # Check to see if any trains have been deleted
@@ -529,8 +533,10 @@ async def scan_world_state():
                         nbr_player_moving += 1
                         trains[tid].discord_name = last_trains[tid].discord_name
                     if tid in watched_trains:
-                        log_msg(f'{last_world_datetime} **MOVING**: Train {trains[tid].symbol}'
-                                f' is now on the move, removing from watch list')
+                        msg = (f'{last_world_datetime} **ON THE MOVE**: Train {trains[tid].symbol}'
+                               f' is now on the move, removing from watch list')
+                        await send_ch_msg(CH_ALERT, msg)
+                        log_msg(msg)
                         del watched_trains[tid]  # No longer need to watch
                 elif (trains[tid].route == last_trains[tid].route
                       and trains[tid].track == last_trains[tid].track
