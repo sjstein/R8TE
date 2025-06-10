@@ -559,9 +559,10 @@ async def scan_world_state():
                         await send_ch_msg(CH_ALERT, msg)
                         log_msg(msg)
                         for msg in alert_messages[tid]:     # Change previous alerts
-                            #await alert_messages[tid].delete()
-                            new_msg = f'~~{msg.content}~~'
+                            #await alert_messages[tid].delete() # Delete previous message
+                            new_msg = f'~~{msg.content}~~'      # Put a strikethru on previous message
                             await msg.edit(content=new_msg)
+                        del alert_messages[tid]
                         del watched_trains[tid]  # No longer need to watch
                 elif (trains[tid].route == last_trains[tid].route
                       and trains[tid].track == last_trains[tid].track
