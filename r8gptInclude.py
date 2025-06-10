@@ -22,6 +22,8 @@ try:
     AI_ALERT_TIME = int(config['r8gpt']['ai_alert_time'])
     PLAYER_ALERT_TIME = int(config['r8gpt']['player_alert_time'])
     REMINDER_TIME = int(config['r8gpt']['reminder_time'])
+    IGNORED_TAGS = [tag.strip().lower() for tag in config['r8gpt']['ignored_tags'].split(',')]
+    REBOOT_TIME = int(config['r8gpt']['reboot_time'])
 
     # Discord options
     BOT_TOKEN = config['discord']['bot_token']

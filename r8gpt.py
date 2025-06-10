@@ -1,4 +1,4 @@
-import asyncio
+from collections import defaultdict
 import discord
 from discord.ext import tasks
 from discord import option
@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 import os
 from r8gptInclude import (WORLDSAVE_PATH, DB_FILENAME, LOG_FILENAME, AI_ALERT_TIME, PLAYER_ALERT_TIME, REMINDER_TIME,
                           BOT_TOKEN, CH_LOG, CH_ALERT, CREWED_TAG, COMPLETED_TAG, AVAILABLE_TAG, LOCATION_DB,
-                          SCAN_TIME)
+                          SCAN_TIME, IGNORED_TAGS, REBOOT_TIME)
 import r8gptDB
 
 DEBUG = True
@@ -126,21 +126,17 @@ def parse_train_loader(root):
 
 
 def location(route_id, track_index):
-    track = track_index
     sub = int(route_id[0])
     trk = int(track_index[0])
-    if sub == 100:
-        if 804 <= trk <= 951:
-            track = 'Cliff siding'
-        elif 4065 <= trk <= 4066:
-            track = 'Main at Cliff'
-    return LOCATION_DB[sub], track
+
+    return LOCATION_DB[sub], trk
 
 
 trains = dict()  # Dict of all trains in the world
 latest_trains = dict()  # Dict of latest update of trains in the world
 player_list = dict()  # Dict of player controlled trains
 watched_trains = dict()  # Dict of trains which are stalled/stuck
+alert_messages = defaultdict(list)  # Dict of messages sent to alert channel
 
 global fp  # File pointer to log
 global last_world_datetime
@@ -186,7 +182,7 @@ def find_tid(train_tag):
     global trains
     # Return tid for a given train symbol to be taken over by player
     for tid in trains:
-        if trains[tid].symbol == train_tag:
+        if trains[tid].symbol.lower() == train_tag.lower():
             return tid
     return -1
 
@@ -267,7 +263,7 @@ async def crew(ctx: discord.ApplicationContext, symbol: str):
                     current_tags.append(tag_to_add)
                 if tag_to_remove in current_tags:
                     current_tags.remove(tag_to_remove)
-                msg = f'[{trains[tid].last_time_moved}] {ctx.author.display_name} crewed {symbol}'
+                msg = f'[{trains[tid].last_time_moved}] {ctx.author.display_name} crewed {trains[tid].symbol}'
                 await thread.edit(applied_tags=current_tags)
                 log_msg(msg)
                 r8gptDB.add_event(trains[tid].last_time_moved, ctx.author.display_name,
@@ -461,15 +457,15 @@ async def scan_world_state():
                 for thread in threads:
                     if thread.name.lower() == ch_name.lower():
                         # write to matching thread name
-                        await thread.send('[r8GPT] ' + ch_msg)
-                        log_msg(msg)
-                        return 0
+                        retval = await thread.send('[r8GPT] ' + ch_msg)
+                        log_msg(ch_msg)
+                        return retval
 
                 if channel.name.lower() == ch_name.lower():
                     # Write to a matching channel name
-                    await channel.send('[r8GPT] ' + ch_msg)
-                    log_msg(msg)
-                    return 0
+                    retval = await channel.send('[r8GPT] ' + ch_msg)
+                    log_msg(ch_msg)
+                    return retval
         print(f"[Warning] thread / channel {ch_name} not found.")
         return -1
 
@@ -482,6 +478,31 @@ async def scan_world_state():
         print(msg)
         await send_ch_msg(CH_LOG, msg)
 
+    elif (os.stat(SAVENAME).st_mtime - last_modified) > REBOOT_TIME:
+        await send_ch_msg(CH_LOG, '**Apparent server reboot** : Re-syncing train states')
+        # Look for and archive player trains
+        # Capture existing player records
+        player_updates = list()
+        for pid in player_list:
+            tid = player_list[pid]
+            player_updates.append([trains[tid].engineer, trains[tid].discord_name, trains[tid].symbol])
+        player_list.clear()
+        # Repopulate trains
+        last_modified = os.stat(SAVENAME).st_mtime  # Time
+        last_world_datetime = update_world_state()
+        # Re-add players
+        for player in player_updates:
+            player_crew_train(find_tid(player[2]), player[0], player[1], last_world_datetime)
+        player_updates.clear()
+        watched_trains.clear()
+
+        msg = (f'** {last_world_datetime} Initializing ** '
+               f'Total number of trains: {train_count("all")} (AI trains: {train_count("ai")},'
+               f' player trains: {train_count("player")}) ')
+        print(msg)
+        await send_ch_msg(CH_LOG, msg)
+
+
     if os.stat(SAVENAME).st_mtime != last_modified:  # Has file timestamp changed since last iteration?
         last_modified = os.stat(SAVENAME).st_mtime
         last_trains = trains.copy()  # Archive our current set of trains for comparison
@@ -489,9 +510,7 @@ async def scan_world_state():
 
         # Check to see if any trains have been deleted
         nbr_ai_removed = 0
-        nbr_player_removed = 0
         trains_removed = list()
-        player_trains_removed = list()
 
         for tid in last_trains:
             if tid not in trains:
@@ -522,7 +541,8 @@ async def scan_world_state():
                 print(msg)
                 await send_ch_msg(CH_LOG, msg)
             # Check for moving AI or player trains
-            elif trains[tid].engineer.lower() != 'none':  # Ignore the static trains
+            elif (trains[tid].engineer.lower() != 'none' and not
+                  any(tag in trains[tid].symbol.lower() for tag in IGNORED_TAGS)):  # Ignore static and special tags
                 if (trains[tid].route != last_trains[tid].route
                         or trains[tid].track != last_trains[tid].track
                         or trains[tid].dist != last_trains[tid].dist):
@@ -534,9 +554,14 @@ async def scan_world_state():
                         trains[tid].discord_name = last_trains[tid].discord_name
                     if tid in watched_trains:
                         msg = (f'{last_world_datetime} **ON THE MOVE**: Train {trains[tid].symbol}'
-                               f' is now on the move, removing from watch list')
+                               f' is now on the move after {last_world_datetime - last_trains[tid].last_time_moved},'
+                               f' removing from watch list')
                         await send_ch_msg(CH_ALERT, msg)
                         log_msg(msg)
+                        for msg in alert_messages[tid]:     # Change previous alerts
+                            #await alert_messages[tid].delete()
+                            new_msg = f'~~{msg.content}~~'
+                            await msg.edit(content=new_msg)
                         del watched_trains[tid]  # No longer need to watch
                 elif (trains[tid].route == last_trains[tid].route
                       and trains[tid].track == last_trains[tid].track
@@ -558,7 +583,7 @@ async def scan_world_state():
                             msg += (f' [{trains[tid].engineer}] {trains[tid].symbol} ({tid})'
                                     f' has not moved for {td}, '
                                     f'Location: {location(trains[tid].route, trains[tid].track)}')
-                            await send_ch_msg(CH_ALERT, msg)
+                            alert_messages[tid].append(await send_ch_msg(CH_ALERT, msg))
                         elif ((trains[tid].last_time_moved - watched_trains[tid][0])
                               // watched_trains[tid][1] > timedelta(minutes=REMINDER_TIME)):
                             watched_trains[tid][1] += 1
@@ -566,7 +591,7 @@ async def scan_world_state():
                             msg += (f'[{trains[tid].engineer}] {trains[tid].symbol} ({tid})'
                                     f' has not moved for {td}, '
                                     f'Location: {location(trains[tid].route, trains[tid].track)}')
-                            await send_ch_msg(CH_ALERT, msg)
+                            alert_messages[tid].append(await send_ch_msg(CH_ALERT, msg))
                         else:
                             pass  # We have already notified at least once, now backing off before another notice
                     print(f'[{trains[tid].engineer}] {trains[tid].symbol} ({tid}) has not moved for {td}, '
