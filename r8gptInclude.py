@@ -2,6 +2,10 @@ import configparser
 
 CONFIG_FILE = 'r8gpt.cfg'
 
+RED_SQUARE = ':red_square:'
+RED_EXCLAMATION = ':exclamation:'
+GREEN_CIRCLE = ':green_circle:'
+
 config = configparser.ConfigParser()
 if len(config.read(CONFIG_FILE)) == 0:
     print(f'Error in loading configuration file "{CONFIG_FILE}" - does it exist? Is it empty?')

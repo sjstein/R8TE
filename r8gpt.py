@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 import os
 from r8gptInclude import (WORLDSAVE_PATH, DB_FILENAME, LOG_FILENAME, AI_ALERT_TIME, PLAYER_ALERT_TIME, REMINDER_TIME,
                           BOT_TOKEN, CH_LOG, CH_ALERT, CREWED_TAG, COMPLETED_TAG, AVAILABLE_TAG, LOCATION_DB,
-                          SCAN_TIME, IGNORED_TAGS, REBOOT_TIME)
+                          SCAN_TIME, IGNORED_TAGS, REBOOT_TIME, RED_SQUARE, RED_EXCLAMATION, GREEN_CIRCLE)
 import r8gptDB
 
 DEBUG = True
@@ -521,7 +521,14 @@ async def scan_world_state():
                 await send_ch_msg(CH_LOG, msg)
                 print(msg)
                 if tid in watched_trains:
-                    del watched_trains[tid]  # No longer need to watch
+                    for msg in alert_messages[tid]:     # Change previous alerts
+                        await msg.delete()              # Delete message
+                    msg = (f' :axe: {last_world_datetime} **TRAIN DELETED**:'
+                           f' [{last_trains[tid].engineer}] {last_trains[tid].symbol} ({tid}) has been deleted.')
+                    await send_ch_msg(CH_ALERT, msg)
+                    del alert_messages[tid]
+                    del watched_trains[tid]
+
 
             elif trains[tid].symbol != last_trains[tid].symbol:
                 print(f'{last_world_datetime} Train re-tagged: {tid} has changed tags since last update '
@@ -553,14 +560,16 @@ async def scan_world_state():
                         nbr_player_moving += 1
                         trains[tid].discord_name = last_trains[tid].discord_name
                     if tid in watched_trains:
-                        msg = (f'{last_world_datetime} **ON THE MOVE**: Train {trains[tid].symbol}'
-                               f' is now on the move after {last_world_datetime - last_trains[tid].last_time_moved},'
-                               f' removing from watch list')
+                        msg = (f' {GREEN_CIRCLE} {last_world_datetime} **ON THE MOVE**: Train {trains[tid].symbol}'
+                               f' ({tid}) is now on the move after'
+                               f' {last_world_datetime - last_trains[tid].last_time_moved}.')
                         await send_ch_msg(CH_ALERT, msg)
                         log_msg(msg)
                         for msg in alert_messages[tid]:     # Change previous alerts
-                            #await alert_messages[tid].delete() # Delete previous message
-                            new_msg = f'~~{msg.content}~~'      # Put a strikethru on previous message
+                            if msg.content[10] == 'r':                  # Message has the red square
+                                new_msg = f'~~{msg.content[22:]}~~'     # Put a strikethru on previous message
+                            else:                                       # Message has the red exclamation
+                                new_msg = f'~~{msg.content[23:]}~~'
                             await msg.edit(content=new_msg)
                         del alert_messages[tid]
                         del watched_trains[tid]  # No longer need to watch
@@ -580,18 +589,18 @@ async def scan_world_state():
                         if tid not in watched_trains:
                             watched_trains[tid] = [trains[tid].last_time_moved, 1]
                             log_msg(f'Added {tid}: {trains[tid].symbol} to watched trains')
-                            msg = f'{last_world_datetime} **POSSIBLE STUCK TRAIN**: '
+                            msg = f' {RED_SQUARE} {last_world_datetime} **POSSIBLE STUCK TRAIN**: '
                             msg += (f' [{trains[tid].engineer}] {trains[tid].symbol} ({tid})'
                                     f' has not moved for {td}, '
-                                    f'Location: {location(trains[tid].route, trains[tid].track)}')
+                                    f'Location: {location(trains[tid].route, trains[tid].track)}.')
                             alert_messages[tid].append(await send_ch_msg(CH_ALERT, msg))
                         elif ((trains[tid].last_time_moved - watched_trains[tid][0])
                               // watched_trains[tid][1] > timedelta(minutes=REMINDER_TIME)):
                             watched_trains[tid][1] += 1
-                            msg = f'{last_world_datetime} **STUCK TRAIN REMINDER # {watched_trains[tid][1] - 1}**: '
+                            msg = f' {RED_EXCLAMATION} {last_world_datetime} **STUCK TRAIN REMINDER # {watched_trains[tid][1] - 1}**: '
                             msg += (f'[{trains[tid].engineer}] {trains[tid].symbol} ({tid})'
                                     f' has not moved for {td}, '
-                                    f'Location: {location(trains[tid].route, trains[tid].track)}')
+                                    f'Location: {location(trains[tid].route, trains[tid].track)}.')
                             alert_messages[tid].append(await send_ch_msg(CH_ALERT, msg))
                         else:
                             pass  # We have already notified at least once, now backing off before another notice
