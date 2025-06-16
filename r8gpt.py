@@ -1,3 +1,4 @@
+import asyncio
 from collections import defaultdict
 import discord
 from discord.ext import tasks
@@ -8,7 +9,7 @@ from datetime import datetime, timedelta
 import os
 from r8gptInclude import (WORLDSAVE_PATH, DB_FILENAME, LOG_FILENAME, AI_ALERT_TIME, PLAYER_ALERT_TIME, REMINDER_TIME,
                           BOT_TOKEN, CH_LOG, CH_ALERT, CREWED_TAG, COMPLETED_TAG, AVAILABLE_TAG, LOCATION_DB,
-                          SCAN_TIME, IGNORED_TAGS, REBOOT_TIME, RED_SQUARE, RED_EXCLAMATION, GREEN_CIRCLE)
+                          SCAN_TIME, IGNORED_TAGS, REBOOT_TIME, RED_SQUARE, RED_EXCLAMATION, GREEN_CIRCLE, AXE)
 import r8gptDB
 
 DEBUG = True
@@ -535,14 +536,17 @@ async def scan_world_state():
                 msg = (f'{last_world_datetime} Train removed: {last_trains[tid].symbol} [{last_trains[tid].engineer}]'
                        f' (# {tid})')
                 await send_ch_msg(CH_LOG, msg)
+                await asyncio.sleep(1)
 
                 print(msg)
                 if tid in watched_trains:
                     for msg in alert_messages[tid]:     # Change previous alerts
                         await msg.delete()              # Delete message
-                    msg = (f' :axe: {last_world_datetime} **TRAIN DELETED**:'
+                    msg = (f' {AXE} {last_world_datetime} **TRAIN DELETED**:'
                            f' [{last_trains[tid].engineer}] {last_trains[tid].symbol} ({tid}) has been deleted.')
                     await send_ch_msg(CH_ALERT, msg)
+                    await asyncio.sleep(1)
+
                     del alert_messages[tid]
                     del watched_trains[tid]
 
@@ -564,6 +568,7 @@ async def scan_world_state():
                 msg = f'{last_world_datetime} Train spawned: {trains[tid].symbol} ({tid})'
                 print(msg)
                 await send_ch_msg(CH_LOG, msg)
+                await asyncio.sleep(1)
             # Check for moving AI or player trains
             elif (trains[tid].engineer.lower() != 'none' and not
                   any(tag in trains[tid].symbol.lower() for tag in IGNORED_TAGS)):  # Ignore static and special tags
@@ -581,6 +586,7 @@ async def scan_world_state():
                                f' ({tid}) is now on the move after'
                                f' {last_world_datetime - last_trains[tid].last_time_moved}.')
                         await send_ch_msg(CH_ALERT, msg)
+                        await asyncio.sleep(1)
                         log_msg(msg)
                         for msg in alert_messages[tid]:     # Change previous alerts
                             if msg.content[10] == 'r':                  # Message has the red square
@@ -611,6 +617,7 @@ async def scan_world_state():
                                     f' has not moved for {td}, '
                                     f'Location: {location(trains[tid].route, trains[tid].track)}.')
                             alert_messages[tid].append(await send_ch_msg(CH_ALERT, msg))
+                            await asyncio.sleep(1)
                         elif ((trains[tid].last_time_moved - watched_trains[tid][0])
                               // watched_trains[tid][1] > timedelta(minutes=REMINDER_TIME)):
                             watched_trains[tid][1] += 1
@@ -619,6 +626,7 @@ async def scan_world_state():
                                     f' has not moved for {td}, '
                                     f'Location: {location(trains[tid].route, trains[tid].track)}.')
                             alert_messages[tid].append(await send_ch_msg(CH_ALERT, msg))
+                            await asyncio.sleep(1)
                         else:
                             pass  # We have already notified at least once, now backing off before another notice
                     print(f'[{trains[tid].engineer}] {trains[tid].symbol} ({tid}) has not moved for {td}, '
@@ -632,6 +640,7 @@ async def scan_world_state():
                f'Watched ({len(watched_trains)})')
 
         await send_ch_msg(CH_LOG, msg)
+        await asyncio.sleep(1)
         print(msg)
 
 
