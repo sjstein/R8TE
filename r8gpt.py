@@ -2,6 +2,7 @@ from collections import defaultdict
 import discord
 from discord.ext import tasks
 from discord import option
+from discord.errors import HTTPException
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta
 import os
@@ -451,19 +452,31 @@ async def scan_world_state():
         if ch_msg.lower() == 'none':
             return 0
 
+        if len(ch_msg) > DISCORD_CHAR_LIMIT - 100:
+            ch_msg = ch_msg[:DISCORD_CHAR_LIMIT - 100] + '[...truncated...]'
+
         for guild in bot.guilds:
             for channel in guild.text_channels + guild.forum_channels:
                 threads = channel.threads
                 for thread in threads:
                     if thread.name.lower() == ch_name.lower():
                         # write to matching thread name
-                        retval = await thread.send('[r8GPT] ' + ch_msg)
+                        try:
+                            retval = await thread.send('[r8GPT] ' + ch_msg)
+                        
+                        except Exception as e:
+                            print(f"Error in scan_world_state/send_ch_msg(1): {e}")
+
                         log_msg(ch_msg)
                         return retval
 
                 if channel.name.lower() == ch_name.lower():
                     # Write to a matching channel name
-                    retval = await channel.send('[r8GPT] ' + ch_msg)
+                    try:
+                        retval = await channel.send('[r8GPT] ' + ch_msg)
+                    except Exception as e:
+                        print(f"Error in scan_world_state/send_ch_msg(2): {e}")
+
                     log_msg(ch_msg)
                     return retval
         print(f"[Warning] thread / channel {ch_name} not found.")
@@ -478,8 +491,12 @@ async def scan_world_state():
         print(msg)
         await send_ch_msg(CH_LOG, msg)
 
+
+
+
     elif (os.stat(SAVENAME).st_mtime - last_modified) > REBOOT_TIME:
         await send_ch_msg(CH_LOG, '**Apparent server reboot** : Re-syncing train states')
+
         # Look for and archive player trains
         # Capture existing player records
         player_updates = list()
@@ -502,7 +519,6 @@ async def scan_world_state():
         print(msg)
         await send_ch_msg(CH_LOG, msg)
 
-
     if os.stat(SAVENAME).st_mtime != last_modified:  # Has file timestamp changed since last iteration?
         last_modified = os.stat(SAVENAME).st_mtime
         last_trains = trains.copy()  # Archive our current set of trains for comparison
@@ -519,6 +535,7 @@ async def scan_world_state():
                 msg = (f'{last_world_datetime} Train removed: {last_trains[tid].symbol} [{last_trains[tid].engineer}]'
                        f' (# {tid})')
                 await send_ch_msg(CH_LOG, msg)
+
                 print(msg)
                 if tid in watched_trains:
                     for msg in alert_messages[tid]:     # Change previous alerts
