@@ -2,10 +2,6 @@ import configparser
 
 CONFIG_FILE = 'r8gpt.cfg'
 
-RED_SQUARE = ':red_square:'
-RED_EXCLAMATION = ':exclamation:'
-GREEN_CIRCLE = ':green_circle:'
-
 config = configparser.ConfigParser()
 if len(config.read(CONFIG_FILE)) == 0:
     print(f'Error in loading configuration file "{CONFIG_FILE}" - does it exist? Is it empty?')
@@ -38,6 +34,10 @@ try:
     CREWED_TAG = config['discord']['crewed_tag']
     AVAILABLE_TAG = config['discord']['available_tag']
     COMPLETED_TAG = config['discord']['completed_tag']
+    RED_SQUARE = f":{config['discord']['alert_emoji']}:"
+    RED_EXCLAMATION = f":{config['discord']['reminder_emoji']}:"
+    GREEN_CIRCLE = f":{config['discord']['moving_emoji']}:"
+    AXE = f":{config['discord']['deleted_emoji']}:"
 
     LOCATION_DB = {100: 'Mojave',
                    110: 'Needles',
