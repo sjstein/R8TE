@@ -505,12 +505,10 @@ async def scan_world_state():
                f' player trains: {train_count("player")}) ')
         print(msg)
         await send_ch_msg(CH_LOG, msg)
-
+    # Check for server reboot
     elif (os.stat(SAVENAME).st_mtime - last_modified) > REBOOT_TIME:
         await send_ch_msg(CH_LOG, '**Apparent server reboot** : Re-syncing train states')
-
-        # Look for and archive player trains
-        # Capture existing player records
+        # Look for and archive player trains and capture existing player records
         player_updates = list()
         for pid in player_list:
             tid = player_list[pid]
@@ -525,28 +523,48 @@ async def scan_world_state():
             player_crew_train(find_tid(player[2]), player[0], player[1], player[3], last_world_datetime)
         player_updates.clear()
         watched_trains.clear()
-
         msg = (f'** {last_world_datetime} Initializing ** '
                f'Total number of trains: {train_count("all")} (AI trains: {train_count("ai")},'
                f' player trains: {train_count("player")}) ')
         print(msg)
         await send_ch_msg(CH_LOG, msg)
-
-    if os.stat(SAVENAME).st_mtime != last_modified:  # Has file timestamp changed since last iteration?
+    #
+    # Begin scanning world saves
+    #
+    # Check time stamp on world save file for an updated version
+    if os.stat(SAVENAME).st_mtime != last_modified:
+        # Updated world save found
         last_modified = os.stat(SAVENAME).st_mtime
         last_trains = trains.copy()  # Archive our current set of trains for comparison
         last_world_datetime = update_world_state()  # Update the trains dictionary
+        # Check if any player trains have lead loco changed
+        deleted_players = list()
+        for player in player_list:
+            orig_tid = player_list[player]
+            orig_symbol = last_trains[orig_tid].symbol
+            if orig_tid != find_tid(orig_symbol):
+                # The lead loco TID has changed
+                new_tid = find_tid(orig_symbol)
+                print(f'Train {orig_symbol} ({orig_tid}) has changed ID to {new_tid}')
+                pid = last_trains[orig_tid].engineer
+                disp = last_trains[orig_tid].discord_name
+                thr = last_trains[orig_tid].job_thread
+                tim = last_trains[orig_tid].last_time_moved
+                player_crew_train(new_tid, pid, disp, thr, tim)
+                trains[new_tid].job_thread = last_trains[orig_tid].job_thread
 
         # Check to see if any trains have been deleted
         nbr_ai_removed = 0
         trains_removed = list()
-
         for tid in last_trains:
             if tid not in trains:
                 trains_removed.append(tid)
                 nbr_ai_removed += 1
-                msg = (f'{last_world_datetime} Train removed: {last_trains[tid].symbol} [{last_trains[tid].engineer}]'
-                       f' (# {tid})')
+                if len(last_trains[tid].discord_name) > 0:
+                    eng_name = last_trains[tid].discord_name
+                else:
+                    eng_name = last_trains[tid].engineer
+                msg = f'{last_world_datetime} Train removed: {last_trains[tid].symbol} [{eng_name}] ({tid})'
                 await send_ch_msg(CH_LOG, msg)
                 await asyncio.sleep(.5)
 
@@ -576,7 +594,11 @@ async def scan_world_state():
             # Check for new trains
             if tid not in last_trains:
                 nbr_ai_added += 1
-                msg = f'{last_world_datetime} Train spawned: {trains[tid].symbol} ({tid})'
+                if len(trains[tid].discord_name) > 0:
+                    eng_name = trains[tid].discord_name
+                else:
+                    eng_name = trains[tid].engineer
+                msg = f'{last_world_datetime} Train spawned: {trains[tid].symbol} [{eng_name}] ({tid})'
                 print(msg)
                 await send_ch_msg(CH_LOG, msg)
                 await asyncio.sleep(.5)
