@@ -77,8 +77,7 @@ class Train:
         self.route = route
         self.track = track
         self.dist = dist
-        self.discord_name = ''  # Human readable player name (if needed)
-        self.job_thread = ''  # Keep track of thread where this train is being monitored
+        self.discord_name = ''
 
     def __str__(self):
         return str(f'ID: {self.id_number}\nSymbol: {self.symbol}\nLead#: {self.lead_num}\nType: {self.train_type}\n'
@@ -211,13 +210,12 @@ def train_count(train_type):
     return count
 
 
-def player_crew_train(tid, player_id, display_name, thread, add_time):
+def player_crew_train(tid, player_id, display_name, add_time):
     global trains
     if tid not in player_list:
         player_list[player_id] = tid
         trains[tid].engineer = player_id
         trains[tid].discord_name = display_name
-        trains[tid].job_thread = thread
         trains[tid].last_time_moved = add_time
 
 
@@ -246,7 +244,6 @@ async def crew(ctx: discord.ApplicationContext, symbol: str):
     global last_world_datetime
 
     thread = ctx.channel
-    thread_id = ctx.channel.id
     forum_channel = thread.parent
     tag_to_add = discord.utils.find(lambda t: t.name.lower() == CREWED_TAG.lower(), forum_channel.available_tags)
     tag_to_remove = discord.utils.find(lambda t: t.name.lower() == AVAILABLE_TAG.lower(), forum_channel.available_tags)
@@ -263,7 +260,7 @@ async def crew(ctx: discord.ApplicationContext, symbol: str):
         tid = find_tid(symbol)
         if tid != -1:
             if trains[tid].engineer == 'None':
-                player_crew_train(tid, ctx.author.mention, ctx.author.display_name, thread_id, last_world_datetime)
+                player_crew_train(tid, ctx.author.mention, ctx.author.display_name, last_world_datetime)
                 if tag_to_add not in current_tags:
                     current_tags.append(tag_to_add)
                 if tag_to_remove in current_tags:
@@ -460,40 +457,29 @@ async def scan_world_state():
             ch_msg = ch_msg[:DISCORD_CHAR_LIMIT - 100] + '[...truncated...]'
 
         for guild in bot.guilds:
-            if type(ch_name) == str:
-                for channel in guild.text_channels + guild.forum_channels:
-                    threads = channel.threads
-                    for thread in threads:
-                        if thread.name.lower() == ch_name.lower():
-                            # write to matching thread name
-                            try:
-                                retval = await thread.send('[r8GPT] ' + ch_msg)
-
-                            except Exception as e:
-                                print(f"Error in scan_world_state/send_ch_msg(1): {e}")
-
-                            log_msg(ch_msg)
-                            return retval
-
-                    if channel.name.lower() == ch_name.lower():
-                        # Write to a matching channel name
+            for channel in guild.text_channels + guild.forum_channels:
+                threads = channel.threads
+                for thread in threads:
+                    if thread.name.lower() == ch_name.lower():
+                        # write to matching thread name
                         try:
-                            retval = await channel.send('[r8GPT] ' + ch_msg)
+                            retval = await thread.send('[r8GPT] ' + ch_msg)
+                        
                         except Exception as e:
-                            print(f"Error in scan_world_state/send_ch_msg(2): {e}")
+                            print(f"Error in scan_world_state/send_ch_msg(1): {e}")
 
                         log_msg(ch_msg)
                         return retval
-            else:
-                try:
-                    retval = await ch_name.send('[r8GPT] ' + ch_msg)
 
-                except Exception as e:
-                    print(f"Error in scan_world_state/send_ch_msg(1): {e}")
+                if channel.name.lower() == ch_name.lower():
+                    # Write to a matching channel name
+                    try:
+                        retval = await channel.send('[r8GPT] ' + ch_msg)
+                    except Exception as e:
+                        print(f"Error in scan_world_state/send_ch_msg(2): {e}")
 
-                log_msg(ch_msg)
-                return retval
-
+                    log_msg(ch_msg)
+                    return retval
         print(f"[Warning] thread / channel {ch_name} not found.")
         return -1
 
@@ -512,15 +498,14 @@ async def scan_world_state():
         player_updates = list()
         for pid in player_list:
             tid = player_list[pid]
-            player_updates.append([trains[tid].engineer, trains[tid].discord_name,
-                                   trains[tid].symbol, trains[tid].job_thread])
+            player_updates.append([trains[tid].engineer, trains[tid].discord_name, trains[tid].symbol])
         player_list.clear()
         # Repopulate trains
         last_modified = os.stat(SAVENAME).st_mtime  # Time
         last_world_datetime = update_world_state()
         # Re-add players
         for player in player_updates:
-            player_crew_train(find_tid(player[2]), player[0], player[1], player[3], last_world_datetime)
+            player_crew_train(find_tid(player[2]), player[0], player[1], last_world_datetime)
         player_updates.clear()
         watched_trains.clear()
         msg = (f'** {last_world_datetime} Initializing ** '
@@ -566,19 +551,20 @@ async def scan_world_state():
                     eng_name = last_trains[tid].engineer
                 msg = f'{last_world_datetime} Train removed: {last_trains[tid].symbol} [{eng_name}] ({tid})'
                 await send_ch_msg(CH_LOG, msg)
-                await asyncio.sleep(.5)
+                await asyncio.sleep(1)
 
                 print(msg)
                 if tid in watched_trains:
-                    for msg in alert_messages[tid]:  # Change previous alerts
-                        await msg.delete()  # Delete message
+                    for msg in alert_messages[tid]:     # Change previous alerts
+                        await msg.delete()              # Delete message
                     msg = (f' {AXE} {last_world_datetime} **TRAIN DELETED**:'
                            f' [{last_trains[tid].engineer}] {last_trains[tid].symbol} ({tid}) has been deleted.')
                     await send_ch_msg(CH_ALERT, msg)
-                    await asyncio.sleep(.5)
+                    await asyncio.sleep(1)
 
                     del alert_messages[tid]
                     del watched_trains[tid]
+
 
             elif trains[tid].symbol != last_trains[tid].symbol:
                 print(f'{last_world_datetime} Train re-tagged: {tid} has changed tags since last update '
@@ -601,10 +587,10 @@ async def scan_world_state():
                 msg = f'{last_world_datetime} Train spawned: {trains[tid].symbol} [{eng_name}] ({tid})'
                 print(msg)
                 await send_ch_msg(CH_LOG, msg)
-                await asyncio.sleep(.5)
+                await asyncio.sleep(1)
             # Check for moving AI or player trains
             elif (trains[tid].engineer.lower() != 'none' and not
-            any(tag in trains[tid].symbol.lower() for tag in IGNORED_TAGS)):  # Ignore static and special tags
+                  any(tag in trains[tid].symbol.lower() for tag in IGNORED_TAGS)):  # Ignore static and special tags
                 if (trains[tid].route != last_trains[tid].route
                         or trains[tid].track != last_trains[tid].track
                         or trains[tid].dist != last_trains[tid].dist):
@@ -619,12 +605,12 @@ async def scan_world_state():
                                f' ({tid}) is now on the move after'
                                f' {last_world_datetime - last_trains[tid].last_time_moved}.')
                         await send_ch_msg(CH_ALERT, msg)
-                        await asyncio.sleep(.5)
+                        await asyncio.sleep(1)
                         log_msg(msg)
-                        for msg in alert_messages[tid]:  # Change previous alerts
-                            if msg.content[10] == 'r':  # Message has the red square
-                                new_msg = f'~~{msg.content[22:]}~~'  # Put a strikethru on previous message
-                            else:  # Message has the red exclamation
+                        for msg in alert_messages[tid]:     # Change previous alerts
+                            if msg.content[10] == 'r':                  # Message has the red square
+                                new_msg = f'~~{msg.content[22:]}~~'     # Put a strikethru on previous message
+                            else:                                       # Message has the red exclamation
                                 new_msg = f'~~{msg.content[23:]}~~'
                             await msg.edit(content=new_msg)
                         del alert_messages[tid]
@@ -638,7 +624,6 @@ async def scan_world_state():
                     else:
                         nbr_player_stopped += 1
                         trains[tid].discord_name = last_trains[tid].discord_name
-                        trains[tid].job_thread = last_trains[tid].job_thread
                     td = last_world_datetime - last_trains[tid].last_time_moved
                     sub = LOCATION_DB[int(trains[tid].route[0])]
                     if (trains[tid].engineer.lower() == 'ai' and td > timedelta(minutes=AI_ALERT_TIME) or
@@ -646,53 +631,26 @@ async def scan_world_state():
                         if tid not in watched_trains:
                             watched_trains[tid] = [trains[tid].last_time_moved, 1]
                             log_msg(f'Added {tid}: {trains[tid].symbol} to watched trains')
-                            if trains[tid].engineer.lower() == 'ai':
-                                msg = f' {RED_SQUARE} {last_world_datetime} **POSSIBLE STUCK TRAIN**: '
-                                msg += (f' [{trains[tid].engineer}] {trains[tid].symbol} ({tid})'
-                                        f' has not moved for {td}, '
-                                        f'Location: {location(trains[tid].route, trains[tid].track)}.')
-                                alert_messages[tid].append(await send_ch_msg(CH_ALERT, msg))
-                            else:
-                                alert_msg = f' {RED_SQUARE} {last_world_datetime} **POSSIBLE STUCK TRAIN**: '
-                                alert_msg += (f' [{trains[tid].discord_name}] {trains[tid].symbol} ({tid})'
-                                              f' has not moved for {td}, '
-                                              f'Location: {location(trains[tid].route, trains[tid].track)}.')
-                                alert_messages[tid].append(await send_ch_msg(CH_ALERT, alert_msg))
-                                await asyncio.sleep(.5)
-                                player_msg = (f'{trains[tid].engineer}: You are currently crewing {trains[tid].symbol},'
-                                              f' yet your train has not moved for at least {td}. Should you tie down?')
-                                forum_thread = await bot.fetch_channel(trains[tid].job_thread)
-                                alert_messages[tid].append(await send_ch_msg(forum_thread, player_msg))
-                            await asyncio.sleep(.5)
+                            msg = f' {RED_SQUARE} {last_world_datetime} **POSSIBLE STUCK TRAIN**: '
+                            msg += (f' [{trains[tid].engineer}] {trains[tid].symbol} ({tid})'
+                                    f' has not moved for {td}, '
+                                    f'Location: {location(trains[tid].route, trains[tid].track)}.')
+                            alert_messages[tid].append(await send_ch_msg(CH_ALERT, msg))
+                            await asyncio.sleep(1)
                         elif ((trains[tid].last_time_moved - watched_trains[tid][0])
                               // watched_trains[tid][1] > timedelta(minutes=REMINDER_TIME)):
                             watched_trains[tid][1] += 1
-                            if trains[tid].engineer.lower() == 'ai':
-                                msg = (f' {RED_EXCLAMATION} {last_world_datetime}'
-                                       f' **STUCK TRAIN REMINDER # {watched_trains[tid][1] - 1}**: ')
-                                msg += (f'[{trains[tid].engineer}] {trains[tid].symbol} ({tid})'
-                                        f' has not moved for {td}, '
-                                        f'Location: {location(trains[tid].route, trains[tid].track)}.')
-                                alert_messages[tid].append(await send_ch_msg(CH_ALERT, msg))
-                                await asyncio.sleep(.5)
-                            else:
-                                alert_msg = (f' {RED_EXCLAMATION} {last_world_datetime} **STUCK TRAIN REMINDER #'
-                                             f' {watched_trains[tid][1] - 1}**: ')
-                                alert_msg += (f' [{trains[tid].discord_name}] {trains[tid].symbol} ({tid})'
-                                              f' has not moved for {td}, '
-                                              f'Location: {location(trains[tid].route, trains[tid].track)}.')
-                                alert_messages[tid].append(await send_ch_msg(CH_ALERT, alert_msg))
-                                await asyncio.sleep(.5)
-                                player_msg = (f'{trains[tid].engineer}: You are currently crewing {trains[tid].symbol},'
-                                              f' yet your train has not moved for at least {td}. Should you tie down?')
-                                forum_thread = await bot.fetch_channel(trains[tid].job_thread)
-                                alert_messages[tid].append(await send_ch_msg(forum_thread, player_msg))
+                            msg = f' {RED_EXCLAMATION} {last_world_datetime} **STUCK TRAIN REMINDER # {watched_trains[tid][1] - 1}**: '
+                            msg += (f'[{trains[tid].engineer}] {trains[tid].symbol} ({tid})'
+                                    f' has not moved for {td}, '
+                                    f'Location: {location(trains[tid].route, trains[tid].track)}.')
+                            alert_messages[tid].append(await send_ch_msg(CH_ALERT, msg))
+                            await asyncio.sleep(1)
                         else:
                             pass  # We have already notified at least once, now backing off before another notice
                     print(f'[{trains[tid].engineer}] {trains[tid].symbol} ({tid}) has not moved for {td}, '
                           f'Location: {location(trains[tid].route, trains[tid].track)}')
                     trains[tid].last_time_moved = last_trains[tid].last_time_moved
-                    trains[tid].job_thread = last_trains[tid].job_thread
                 else:
                     print(f'something odd in comparing these two:\n{trains[tid]}\n{last_trains[tid]}')
 
@@ -701,7 +659,7 @@ async def scan_world_state():
                f'Watched ({len(watched_trains)})')
 
         await send_ch_msg(CH_LOG, msg)
-        await asyncio.sleep(.5)
+        await asyncio.sleep(1)
         print(msg)
 
 
