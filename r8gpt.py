@@ -131,7 +131,10 @@ def location(route_id, track_index):
     sub = int(route_id[0])
     trk = int(track_index[0])
 
-    return LOCATION_DB[sub], trk
+    if sub in LOCATION_DB:
+        return LOCATION_DB[sub]
+    else:
+        return sub
 
 
 trains = dict()  # Dict of all trains in the world
@@ -365,7 +368,7 @@ async def complete(ctx: discord.ApplicationContext, symbol: str, notes: str):
                         current_tags.remove(tag2_to_remove)
                     msg = (f'[{trains[train].last_time_moved}] {ctx.author.display_name} marked train '
                            f'{trains[train].symbol} {COMPLETED_TAG}')
-                    if len(notes) > 0:
+                    if notes:
                         msg += f'. Notes: {notes}'
                     await thread.send(msg)
                     await thread.edit(applied_tags=current_tags)
@@ -407,7 +410,7 @@ async def r8list(ctx: discord.ApplicationContext, list_type: str):
                     msg += f'{trains[tid].engineer}'
                 msg += (f' : {trains[tid].symbol} [{tid}] # {trains[tid].lead_num},'
                         f' # {trains[tid].lead_num}, Units: {trains[tid].num_units}, Stopped for: {td},'
-                        f' Location: {location(trains[tid].route, trains[tid].track)}\n')
+                        f' DLC: {location(trains[tid].route, trains[tid].track)}\n')
         else:
             if trains[tid].engineer.lower() == 'none':
                 msg += (f'{trains[tid].symbol} [{tid}] # {trains[tid].lead_num},'
@@ -634,7 +637,7 @@ async def scan_world_state():
                             msg = f' {RED_SQUARE} {last_world_datetime} **POSSIBLE STUCK TRAIN**: '
                             msg += (f' [{trains[tid].engineer}] {trains[tid].symbol} ({tid})'
                                     f' has not moved for {td}, '
-                                    f'Location: {location(trains[tid].route, trains[tid].track)}.')
+                                    f'DLC: {location(trains[tid].route, trains[tid].track)}.')
                             alert_messages[tid].append(await send_ch_msg(CH_ALERT, msg))
                             await asyncio.sleep(1)
                         elif ((trains[tid].last_time_moved - watched_trains[tid][0])
@@ -643,13 +646,13 @@ async def scan_world_state():
                             msg = f' {RED_EXCLAMATION} {last_world_datetime} **STUCK TRAIN REMINDER # {watched_trains[tid][1] - 1}**: '
                             msg += (f'[{trains[tid].engineer}] {trains[tid].symbol} ({tid})'
                                     f' has not moved for {td}, '
-                                    f'Location: {location(trains[tid].route, trains[tid].track)}.')
+                                    f'DLC: {location(trains[tid].route, trains[tid].track)}.')
                             alert_messages[tid].append(await send_ch_msg(CH_ALERT, msg))
                             await asyncio.sleep(1)
                         else:
                             pass  # We have already notified at least once, now backing off before another notice
                     print(f'[{trains[tid].engineer}] {trains[tid].symbol} ({tid}) has not moved for {td}, '
-                          f'Location: {location(trains[tid].route, trains[tid].track)}')
+                          f'DLC: {location(trains[tid].route, trains[tid].track)}')
                     trains[tid].last_time_moved = last_trains[tid].last_time_moved
                 else:
                     print(f'something odd in comparing these two:\n{trains[tid]}\n{last_trains[tid]}')
