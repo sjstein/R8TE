@@ -80,9 +80,9 @@ def location(route_id, track_index):
         return sub
 
 
-curr_trains = defaultdict(Train)  # Dict of all trains in the world
-watched_trains = defaultdict(Train)  # Dict of trains which are stalled/stuck
-players = defaultdict(Player)  # Dict of player controlled trains
+curr_trains = dict()                # Dict of all trains in the world
+watched_trains = dict()             # Dict of trains which are stalled/stuck
+players = dict()                    # Dict of player controlled trains
 alert_messages = defaultdict(list)  # Dict of messages sent to alert channel
 
 global fp  # File pointer to log
@@ -256,7 +256,7 @@ async def strike_stuck_msgs(target_channel: str):
 
                     if strike_it:
                         # Don't double-strikethrough
-                        if not (new_content.startswith("~~") and new_content.endswith("~~")):
+                        if not (new_content.startswith("~~") and new_content.endswith("~~")):   # noqa
                             new_content = f"~~{new_content}~~"
                         strike_it = False
 
