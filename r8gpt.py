@@ -258,6 +258,7 @@ async def strike_stuck_msgs(target_channel: str):
                         # Don't double-strikethrough
                         if not (new_content.startswith("~~") and new_content.endswith("~~")):
                             new_content = f"~~{new_content}~~"
+                        strike_it = False
 
                         try:
                             await message.edit(content=new_content)
