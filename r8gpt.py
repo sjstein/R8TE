@@ -341,6 +341,7 @@ async def tie_down(ctx: discord.ApplicationContext, location: str):
         await ctx.respond(f'Attempting to tie down', ephemeral=True)
         if ctx.author.mention in players:
             tid = players[ctx.author.mention].train_id
+            orig_engineer = curr_trains[tid].engineer
             # Clear info from train record
             curr_trains[tid].engineer = 'none'
             curr_trains[tid].discord_id = None
@@ -359,6 +360,21 @@ async def tie_down(ctx: discord.ApplicationContext, location: str):
             r8gptDB.add_event(curr_trains[tid].last_time_moved, ctx.author.display_name,
                               'TIED_DOWN', curr_trains[tid].symbol, event_db)
             r8gptDB.save_db(DB_FILENAME, event_db)
+            if tid in watched_trains:
+                # This train has a watch on it - time to remove, and strike-thru previous alert messages
+                msg = (f' {GREEN_CIRCLE} {last_world_datetime} **TIED DOWN**: Train {curr_trains[tid].symbol}'
+                       f' ({tid}) has been tied down by {orig_engineer}')
+                await send_ch_msg(CH_ALERT, msg)
+                await asyncio.sleep(.5)
+                log_msg(msg)
+                for msg in alert_messages[tid]:  # Change previous alerts
+                    if msg.content[10] == 'r':  # Message has the red square
+                        new_msg = f'~~{msg.content[22:]}~~'  # Put a strikethru on previous message
+                    else:  # Message has the red exclamation
+                        new_msg = f'~~{msg.content[23:]}~~'
+                    await msg.edit(content=new_msg)
+                del alert_messages[tid]
+                del watched_trains[tid]  # No longer need to watch
             return
         else:
             await ctx.respond(f'**ERROR** Unable to tie-down: '
@@ -395,6 +411,7 @@ async def complete(ctx: discord.ApplicationContext, symbol: str, notes: str):
         await ctx.respond(f'Attempting to mark {symbol} as complete.', ephemeral=True)
         if ctx.author.mention in players:
             tid = players[ctx.author.mention].train_id
+            orig_engineer = curr_trains[tid].engineer
             # Clear info from train record
             curr_trains[tid].engineer = 'None'
             curr_trains[tid].discord_id = None
@@ -417,6 +434,21 @@ async def complete(ctx: discord.ApplicationContext, symbol: str, notes: str):
             r8gptDB.add_event(curr_trains[tid].last_time_moved, ctx.author.display_name,
                               'MARKED_COMPLETE', curr_trains[tid].symbol, event_db)
             r8gptDB.save_db(DB_FILENAME, event_db)
+            if tid in watched_trains:
+                # This train has a watch on it - time to remove, and strike-thru previous alert messages
+                msg = (f' {GREEN_CIRCLE} {last_world_datetime} **POWERED DOWN**: Train {curr_trains[tid].symbol}'
+                       f' ({tid}) has been tied down by {orig_engineer}')
+                await send_ch_msg(CH_ALERT, msg)
+                await asyncio.sleep(.5)
+                log_msg(msg)
+                for msg in alert_messages[tid]:  # Change previous alerts
+                    if msg.content[10] == 'r':  # Message has the red square
+                        new_msg = f'~~{msg.content[22:]}~~'  # Put a strikethru on previous message
+                    else:  # Message has the red exclamation
+                        new_msg = f'~~{msg.content[23:]}~~'
+                    await msg.edit(content=new_msg)
+                del alert_messages[tid]
+                del watched_trains[tid]  # No longer need to watch
             return
         else:
             await ctx.respond(f'Unable to mark as complete; are you sure you are clocked in?', ephemeral=True)
@@ -624,6 +656,7 @@ async def scan_world_state():
                         curr_trains[tid].job_thread = last_trains[tid].job_thread
 
                     if tid in watched_trains:
+                        # This train has a watch on it - time to remove, and strike-thru previous alert messages
                         msg = (f' {GREEN_CIRCLE} {last_world_datetime} **ON THE MOVE**: Train {curr_trains[tid].symbol}'
                                f' ({tid}) is now on the move after'
                                f' {last_world_datetime - last_trains[tid].last_time_moved}.')
