@@ -27,7 +27,6 @@ TMP_FILENAME = 'r8gpt_msg.txt'
 
 event_db = list()
 
-
 def parse_train_loader(root):
     cuts = list()
     for t in root.iter('TrainLoader'):
@@ -274,7 +273,6 @@ async def crew(ctx: discord.ApplicationContext, symbol: str):
     global last_world_datetime
 
     thread = ctx.channel
-    thread_id = ctx.channel.id
     forum_channel = thread.parent
     tag_to_add = discord.utils.find(lambda t: t.name.lower() == CREWED_TAG.lower(), forum_channel.available_tags)
     tag_to_remove = discord.utils.find(lambda t: t.name.lower() == AVAILABLE_TAG.lower(), forum_channel.available_tags)
@@ -457,6 +455,7 @@ async def r8list(ctx: discord.ApplicationContext, list_type: str):
                 if curr_trains[tid].engineer.lower() == 'none':
                     msg += (f'{curr_trains[tid].symbol} [{tid}] # {curr_trains[tid].lead_num},'
                             f' Units: {curr_trains[tid].num_units}\n')
+
     if len(msg) < 1:
         msg = f'No {list_type} trains found.'
     if len(msg) > DISCORD_CHAR_LIMIT:
@@ -493,6 +492,7 @@ async def scan_world_state():
                f'Total number of trains: {train_count("all", curr_trains, watched_trains)} '
                f'(AI trains: {train_count("ai", curr_trains, watched_trains)},'
                f' player trains: {train_count("player", curr_trains, watched_trains)}) ')
+
         print(msg)
         await send_ch_msg(CH_LOG, msg)
         await strike_stuck_msgs(CH_ALERT)   # Get rid of any chaff from previous alerts
@@ -507,6 +507,7 @@ async def scan_world_state():
             player_updates.append([players[player].discord_id, players[player].discord_name,
                                    players[player].train_symbol, players[player].job_thread])
         players.clear()
+
         # Repopulate trains
         last_worldsave_modified_time = os.stat(SAVENAME).st_mtime  # Time
         last_world_datetime = update_world_state(curr_trains)
@@ -514,6 +515,7 @@ async def scan_world_state():
         for player in player_updates:
             player_crew_train(curr_trains, find_tid(player[2], curr_trains), player[0], player[1], player[3],
                               last_world_datetime)
+
         player_updates.clear()
         watched_trains.clear()
         msg = (f'{last_world_datetime} **--> INITIALIZING NEW WORLD STATE <--** '
@@ -549,14 +551,15 @@ async def scan_world_state():
                 msg = f'{last_world_datetime} Train removed: {last_trains[tid].symbol} [{eng_name}] ({tid})'
                 await send_ch_msg(CH_LOG, msg)
                 await asyncio.sleep(.5)
+
                 print(msg)
                 if tid in watched_trains:
-                    for msg in alert_messages[tid]:  # Change previous alerts
-                        await msg.delete()  # Delete message
+                    for msg in alert_messages[tid]:     # Change previous alerts
+                        await msg.delete()              # Delete message
                     msg = (f' {AXE} {last_world_datetime} **TRAIN DELETED**:'
                            f' [{last_trains[tid].engineer}] {last_trains[tid].symbol} ({tid}) has been deleted.')
                     await send_ch_msg(CH_ALERT, msg)
-                    await asyncio.sleep(.5)
+                    await asyncio.sleep(1)
 
                     del alert_messages[tid]
                     del watched_trains[tid]
@@ -628,12 +631,12 @@ async def scan_world_state():
                                f' ({tid}) is now on the move after'
                                f' {last_world_datetime - last_trains[tid].last_time_moved}.')
                         await send_ch_msg(CH_ALERT, msg)
-                        await asyncio.sleep(.5)
+                        await asyncio.sleep(1)
                         log_msg(msg)
-                        for msg in alert_messages[tid]:  # Change previous alerts
-                            if msg.content[10] == 'r':  # Message has the red square
-                                new_msg = f'~~{msg.content[22:]}~~'  # Put a strikethru on previous message
-                            else:  # Message has the red exclamation
+                        for msg in alert_messages[tid]:     # Change previous alerts
+                            if msg.content[10] == 'r':                  # Message has the red square
+                                new_msg = f'~~{msg.content[22:]}~~'     # Put a strikethru on previous message
+                            else:                                       # Message has the red exclamation
                                 new_msg = f'~~{msg.content[23:]}~~'
                             await msg.edit(content=new_msg)
                         del alert_messages[tid]
@@ -712,7 +715,7 @@ async def scan_world_state():
                f'Watched ({len(watched_trains)})')
 
         await send_ch_msg(CH_LOG, msg)
-        await asyncio.sleep(.5)
+        await asyncio.sleep(1)
         print(msg)
 
 
