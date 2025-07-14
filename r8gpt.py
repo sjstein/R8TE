@@ -1,24 +1,24 @@
 import asyncio
 from collections import defaultdict
-import discord
-from discord.ext import tasks
-from discord import option
-from discord.errors import HTTPException
+import discord                              # noqa This libray is covered in py-cord
+from discord.ext import tasks               # noqa This libray is covered in py-cord
+from discord import option                  # noqa This libray is covered in py-cord
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta
 import os
 from r8gptInclude import (WORLDSAVE_PATH, DB_FILENAME, LOG_FILENAME, AI_ALERT_TIME, PLAYER_ALERT_TIME, REMINDER_TIME,
                           BOT_TOKEN, CH_LOG, CH_ALERT, CREWED_TAG, COMPLETED_TAG, AVAILABLE_TAG, LOCATION_DB,
                           SCAN_TIME, IGNORED_TAGS, REBOOT_TIME, RED_SQUARE, RED_EXCLAMATION, GREEN_CIRCLE, AXE)
+from r8gptInclude import Car, Cut, Train, Player
 import r8gptDB
 
 DEBUG = True
 
 # Necessary Bot intents
 intents = discord.Intents.default()
-intents.guilds = True
-intents.messages = True
-intents.message_content = True
+intents.guilds = True           # noqa
+intents.messages = True         # noqa
+intents.message_content = True  # noqa
 
 SAVENAME = WORLDSAVE_PATH + '/Auto Save World.xml'
 DIESEL_ENGINE = 'US_DieselEngine'
@@ -26,64 +26,6 @@ DISCORD_CHAR_LIMIT = 2000
 TMP_FILENAME = 'r8gpt_msg.txt'
 
 event_db = list()
-
-
-class Car:
-    def __init__(self, filename, unit_type, route, track, node, dist, reverse, weight,
-                 dest_tag, unit_number, hazmat_tag):
-        self.filename = filename
-        self.unit_type = unit_type
-        self.route = route
-        self.track = track
-        self.node = node
-        self.dist = dist
-        self.reverse = reverse
-        self.weight = weight
-        self.dest_tag = dest_tag
-        self.unit_number = unit_number
-        self.hazmat_tag = hazmat_tag
-
-    def __str__(self):
-        return str(f'fname: {self.filename}, type: {self.unit_type}, route: {self.route}, track: {self.track}, '
-                   f'node: {self.node}, dist: {self.dist}, reverse: {self.reverse}, weight: {self.weight}, '
-                   f'dest_tag: {self.dest_tag}, unit_number: {self.unit_number}, hazmat: {self.hazmat_tag}')
-
-
-class Cut:
-    def __init__(self, train_id, is_ai, direction, speed_limit, prev_signal, consist):
-        self.train_id = train_id
-        self.is_ai = is_ai
-        self.direction = direction
-        self.speed_limit = speed_limit
-        self.prev_signal = prev_signal
-        self.consist = consist
-
-    def __str__(self):
-        return str(f'ID: {self.train_id}, AI: {self.is_ai}, dir: {self.direction}, spd limit {self.speed_limit},'
-                   f'prev signal: {self.prev_signal}, # cars: {len(self.consist)} ')
-
-
-class Train:
-    def __init__(self, id_number, symbol, lead_num, train_type, num_units, engineer, consist,
-                 last_time_moved, route, track, dist):
-        self.id_number = id_number  # Unique ID
-        self.symbol = symbol  # Train tag symbol
-        self.lead_num = lead_num  # Lead loco number
-        self.train_type = train_type  # freight, passenger
-        self.num_units = num_units  # Number of locos + cars total
-        self.engineer = engineer  # AI, player name, none
-        self.consist = consist  # Full consist of train
-        self.last_time_moved = last_time_moved  # Last time the train showed as moving
-        self.route = route
-        self.track = track
-        self.dist = dist
-        self.discord_name = ''  # Human readable player name (if needed)
-        self.job_thread = ''  # Keep track of thread where this train is being monitored
-
-    def __str__(self):
-        return str(f'ID: {self.id_number}\nSymbol: {self.symbol}\nLead#: {self.lead_num}\nType: {self.train_type}\n'
-                   f'Number of cars:{self.num_units}\nEngineer: {self.engineer}\nRoute: {self.route}\n'
-                   f'Track: {self.track}\nDist: {self.dist}\nLast Update: {self.last_time_moved}')
 
 
 def parse_train_loader(root):
@@ -95,8 +37,8 @@ def parse_train_loader(root):
         speed_limit = t.find('ManuallyAppliedSpeedLimitMPH').text
         prev_signal = t.find('PreviousSignalInstruction').text
         units = list()
-        unitLoader = t.find('unitLoaderList')
-        for rail_vehicle in unitLoader.iter('RailVehicleStateClass'):
+        unit_loader = t.find('unitLoaderList')
+        for rail_vehicle in unit_loader.iter('RailVehicleStateClass'):
             file_name = rail_vehicle.find('rvXMLfilename').text
             unit_type = rail_vehicle.find('unitType').text
             if len(rail_vehicle.find("currentRoutePrefix")) > 1:
@@ -132,23 +74,24 @@ def location(route_id, track_index):
     sub = int(route_id[0])
     trk = int(track_index[0])
 
-    return LOCATION_DB[sub], trk
+    if sub in LOCATION_DB:
+        return LOCATION_DB[sub]
+    else:
+        return sub
 
 
-trains = dict()  # Dict of all trains in the world
-latest_trains = dict()  # Dict of latest update of trains in the world
-player_list = dict()  # Dict of player controlled trains
-watched_trains = dict()  # Dict of trains which are stalled/stuck
+curr_trains = defaultdict(Train)  # Dict of all trains in the world
+watched_trains = defaultdict(Train)  # Dict of trains which are stalled/stuck
+players = defaultdict(Player)  # Dict of player controlled trains
 alert_messages = defaultdict(list)  # Dict of messages sent to alert channel
 
 global fp  # File pointer to log
 global last_world_datetime
 
 
-def update_world_state():
-    global trains
-
-    trains.clear()
+def update_world_state(world_trains):
+    symbol_list = list()
+    world_trains.clear()
     tree = ET.parse(SAVENAME)
     root = tree.getroot()
     world_save_datetime = datetime.strptime(root.find('date').text.split('.')[0], '%Y-%m-%dT%H:%M:%S')
@@ -161,71 +104,67 @@ def update_world_state():
             rp = cut.consist[0].route
             ts = cut.consist[0].track
             dist = cut.consist[0].dist
+            if tag in symbol_list:
+                if tag != 'None':
+                    print(f'Duplicate symbol: [{tag}] found while parsing world save')
+            else:
+                symbol_list.append(tag)
             if 'amtrak' in cut.consist[0].filename.lower():
                 train_type = 'Passenger'
             else:
                 train_type = 'Freight'
             if cut.is_ai.lower() == 'true':
-                trains[tid] = Train(tid, tag, nbr, train_type, len(cut.consist), 'AI', cut.consist.copy(),
-                                    world_save_datetime, rp, ts, dist)
-            elif tid in {value: key for key, value in player_list.items()}:
-                player_id = [key for key, val in player_list.items() if val == tid]
-                trains[tid] = Train(tid, tag, nbr, train_type, len(cut.consist),
-                                    player_id[0], cut.consist.copy(), world_save_datetime, rp, ts, dist)
+                # Create AI crewed trains
+                world_trains[tid] = Train(tid, tag, nbr, train_type, len(cut.consist), 'AI', cut.consist.copy(),
+                                          world_save_datetime, rp, ts, dist)
             else:
-                trains[tid] = Train(tid, tag, nbr, train_type, len(cut.consist),
-                                    'None', cut.consist.copy(), world_save_datetime, rp, ts, dist)
+                world_trains[tid] = Train(tid, tag, nbr, train_type, len(cut.consist),
+                                          'None', cut.consist.copy(), world_save_datetime, rp, ts, dist)
+
         else:
             # First car is not a locomotive, so not a valid train
             pass
     return world_save_datetime
 
 
-def find_tid(train_tag):
-    global trains
-    # Return tid for a given train symbol to be taken over by player
-    for tid in trains:
-        if trains[tid].symbol.lower() == train_tag.lower():
+def find_tid(train_tag, train_list):
+    for tid in train_list:
+        if train_list[tid].symbol.lower() == train_tag.lower():
             return tid
     return -1
 
 
-def train_count(train_type):
-    global trains
+def train_count(train_type, world_trains, watched_trains):
     count = 0
     if train_type.lower() == 'ai':
-        for tid in trains:
-            if trains[tid].engineer.lower() == 'ai':
+        for tid in world_trains:
+            if world_trains[tid].engineer.lower() == 'ai':
                 count += 1
     elif train_type.lower() == 'player':
-        for tid in trains:
-            if trains[tid].engineer.lower() != 'none' and trains[tid].engineer.lower() != 'ai':
+        for tid in world_trains:
+            if world_trains[tid].engineer.lower() != 'none' and world_trains[tid].engineer.lower() != 'ai':
                 count += 1
     elif train_type.lower() == 'stuck':
         count = len(watched_trains)
     elif train_type.lower() == 'all':
-        count = len(trains)
+        count = len(world_trains)
     else:
         count = -1
 
     return count
 
 
-def player_crew_train(tid, player_id, display_name, thread, add_time):
-    global trains
-    if tid not in player_list:
-        player_list[player_id] = tid
-        trains[tid].engineer = player_id
-        trains[tid].discord_name = display_name
-        trains[tid].job_thread = thread
-        trains[tid].last_time_moved = add_time
-
-
-def del_player_train(tid, player_id):
-    global trains
-    if player_id in player_list and player_list[player_id] == tid:
-        del player_list[player_id]
-        trains[tid].engineer = 'None'
+def player_crew_train(train_set, tid, discord_id, discord_name, thread, add_time):
+    if discord_id in players:
+        return -1
+    players[discord_id] = Player(discord_id, discord_name, thread, curr_trains[tid].symbol, tid, add_time)
+    if tid not in players:
+        train_set[tid].engineer = discord_name
+        train_set[tid].discord_id = discord_id
+        train_set[tid].job_thread = thread
+        train_set[tid].last_time_moved = add_time
+        print(f'player_crew_train called:\n\nPlayer info:\n{players[discord_id]}\n\nTrain info:\n{train_set[tid]}')
+        return 0
 
 
 def log_msg(msg):
@@ -237,6 +176,95 @@ def log_msg(msg):
 
 
 bot = discord.Bot(intents=intents)
+
+
+async def send_ch_msg(ch_name, ch_msg):
+    """
+    Send messages to discord channel
+    :param ch_name: name of discord channel to write message to
+    :param ch_msg: Message content
+    :return: 0 if successful, -1 if error
+    """
+    if ch_msg.lower() == 'none':
+        return 0
+
+    if len(ch_msg) > DISCORD_CHAR_LIMIT - 100:
+        ch_msg = ch_msg[:DISCORD_CHAR_LIMIT - 100] + '[...truncated...]'
+
+    for guild in bot.guilds:
+        if isinstance(ch_name, str):
+            for channel in guild.text_channels + guild.forum_channels:
+                threads = channel.threads
+                for thread in threads:
+                    if thread.name.lower() == ch_name.lower():
+                        try:
+                            retval = await thread.send('[r8GPT] ' + ch_msg)
+
+                        except Exception as e:
+                            ex_msg = f'Exception in scan_world_state/send_ch_msg(1): {e}'
+                            print(ex_msg)
+                            retval = -1
+
+                        log_msg(ch_msg)
+                        return retval
+
+                if channel.name.lower() == ch_name.lower():
+                    try:
+                        retval = await channel.send('[r8GPT] ' + ch_msg)
+
+                    except Exception as e:
+                        ex_msg = f'Exception in scan_world_state/send_ch_msg(2): {e}'
+                        print(ex_msg)
+                        retval = -1
+
+                    log_msg(ch_msg)
+                    return retval
+        else:
+            try:
+                retval = await ch_name.send('[r8GPT] ' + ch_msg)
+
+            except Exception as e:
+                ex_msg = f'Exception in scan_world_state/send_ch_msg channel name [{ch_name}] type error: {e}'
+                print(ex_msg)
+                retval = -1
+
+            log_msg(ch_msg)
+            return retval
+
+    print(f"[Warning] thread / channel {ch_name} not found.")
+    return -1
+
+
+async def strike_stuck_msgs(target_channel: str):
+    for guild in bot.guilds:
+        for channel in guild.text_channels + guild.forum_channels:
+            if channel.name == target_channel:
+                strike_it = False
+                async for message in channel.history(limit=100):
+                    if RED_SQUARE in message.content:
+                        new_content = message.content.replace(RED_SQUARE, "").strip()
+                        strike_it = True
+                    elif RED_EXCLAMATION in message.content:
+                        new_content = message.content.replace(RED_EXCLAMATION, "").strip()
+                        strike_it = True
+                    elif GREEN_CIRCLE in message.content:
+                        new_content = message.content.replace(GREEN_CIRCLE, "").strip()
+                        strike_it = True
+                    elif AXE in message.content:
+                        new_content = message.content.replace(AXE, "").strip()
+                        strike_it = True
+
+                    if strike_it:
+                        # Don't double-strikethrough
+                        if not (new_content.startswith("~~") and new_content.endswith("~~")):
+                            new_content = f"~~{new_content}~~"
+
+                        try:
+                            await message.edit(content=new_content)
+                        except discord.Forbidden:
+                            print(f"Missing permissions to edit message ID {message.id}.")
+                        except discord.HTTPException as e:
+                            print(f"Failed to edit message ID {message.id}: {e}")
 
 
 @bot.slash_command(name='crew', description=f"Crew a train")
@@ -260,24 +288,29 @@ async def crew(ctx: discord.ApplicationContext, symbol: str):
         return
     try:
         await ctx.respond(f'Attempting to crew train {symbol}', ephemeral=True)
-        tid = find_tid(symbol)
+        tid = find_tid(symbol, curr_trains)
         if tid != -1:
-            if trains[tid].engineer == 'None':
-                player_crew_train(tid, ctx.author.mention, ctx.author.display_name, thread_id, last_world_datetime)
+            if curr_trains[tid].engineer.lower() == 'none':
+                if player_crew_train(curr_trains, tid, ctx.author.mention, ctx.author.display_name, thread_id,
+                                     last_world_datetime) < 0:
+                    await ctx.respond(f'**UNABLE TO CREW; You are currently listed as crewing'
+                                      f' [{players[ctx.author.mention].train_symbol}]**', ephemeral=True)
+                    return
                 if tag_to_add not in current_tags:
                     current_tags.append(tag_to_add)
                 if tag_to_remove in current_tags:
                     current_tags.remove(tag_to_remove)
-                msg = f'[{trains[tid].last_time_moved}] {ctx.author.display_name} crewed {trains[tid].symbol}'
+                msg = f'{curr_trains[tid].last_time_moved} {ctx.author.display_name} crewed {curr_trains[tid].symbol}'
                 await thread.edit(applied_tags=current_tags)
                 log_msg(msg)
-                r8gptDB.add_event(trains[tid].last_time_moved, ctx.author.display_name,
+                await send_ch_msg(CH_LOG, msg)
+                r8gptDB.add_event(curr_trains[tid].last_time_moved, ctx.author.display_name,
                                   'CREW', symbol, event_db)
                 r8gptDB.save_db(DB_FILENAME, event_db)
                 await thread.send(msg)
             else:
                 await ctx.respond(f'**UNABLE TO CREW, Train {symbol} shows '
-                                  f'crewed by {trains[tid].engineer}**', ephemeral=True)
+                                  f'crewed by {curr_trains[tid].engineer}**', ephemeral=True)
         else:
             await ctx.respond(f'**UNABLE TO CREW, Train {symbol} not found**')
     except discord.Forbidden:
@@ -305,24 +338,27 @@ async def tie_down(ctx: discord.ApplicationContext, location: str):
         return
     try:
         await ctx.respond(f'Attempting to tie down', ephemeral=True)
-        for tid in trains:
-            if trains[tid].engineer == ctx.author.mention:
-                if tid in watched_trains:
-                    watched_trains.pop(tid)
-                del_player_train(tid, ctx.author.mention)
-                if tag_to_add not in current_tags:
-                    current_tags.append(tag_to_add)
-                if tag_to_remove in current_tags:
-                    current_tags.remove(tag_to_remove)
-                msg = (f'[{trains[tid].last_time_moved}] {ctx.author.display_name} tied down train '
-                       f'{trains[tid].symbol} at {location}')
-                await thread.send(msg)
-                await thread.edit(applied_tags=current_tags)
-                log_msg(msg)
-                r8gptDB.add_event(trains[tid].last_time_moved, ctx.author.display_name,
-                                  'TIED_DOWN', trains[tid].symbol, event_db)
-                r8gptDB.save_db(DB_FILENAME, event_db)
-                return
+        if ctx.author.mention in players:
+            tid = players[ctx.author.mention].train_id
+            # Clear info from train record
+            curr_trains[tid].engineer = 'none'
+            curr_trains[tid].discord_id = None
+            curr_trains[tid].job_thread = None
+            del players[ctx.author.mention]  # Remove this player record
+            if tag_to_add not in current_tags:
+                current_tags.append(tag_to_add)
+            if tag_to_remove in current_tags:
+                current_tags.remove(tag_to_remove)
+            msg = (f'{curr_trains[tid].last_time_moved} {ctx.author.display_name} tied down train '
+                   f'{curr_trains[tid].symbol} at {location}')
+            await thread.send(msg)
+            await send_ch_msg(CH_LOG, msg)
+            await thread.edit(applied_tags=current_tags)
+            log_msg(msg)
+            r8gptDB.add_event(curr_trains[tid].last_time_moved, ctx.author.display_name,
+                              'TIED_DOWN', curr_trains[tid].symbol, event_db)
+            r8gptDB.save_db(DB_FILENAME, event_db)
+            return
         else:
             await ctx.respond(f'**ERROR** Unable to tie-down: '
                               f'You are not listed as crew on any train.', ephemeral=True)
@@ -356,30 +392,31 @@ async def complete(ctx: discord.ApplicationContext, symbol: str, notes: str):
         return
     try:
         await ctx.respond(f'Attempting to mark {symbol} as complete.', ephemeral=True)
-        for train in trains:
-            if trains[train].engineer == ctx.author.mention:
-                if trains[train].symbol.lower() == symbol.lower():
-                    del_player_train(train, ctx.author.mention)
-                    if tag_to_add not in current_tags:
-                        current_tags.append(tag_to_add)
-                    if tag1_to_remove in current_tags:
-                        current_tags.remove(tag1_to_remove)
-                    if tag2_to_remove in current_tags:
-                        current_tags.remove(tag2_to_remove)
-                    msg = (f'[{trains[train].last_time_moved}] {ctx.author.display_name} marked train '
-                           f'{trains[train].symbol} {COMPLETED_TAG}')
-                    if len(notes) > 0:
-                        msg += f'. Notes: {notes}'
-                    await thread.send(msg)
-                    await thread.edit(applied_tags=current_tags)
-                    log_msg(msg)
-                    r8gptDB.add_event(trains[train].last_time_moved, ctx.author.display_name,
-                                      'MARKED_COMPLETE', trains[train].symbol, event_db)
-                    r8gptDB.save_db(DB_FILENAME, event_db)
-                    return
-                else:
-                    await ctx.respond(f'Unable to mark {symbol} as complete,'
-                                      f' it appears you are crewing {player_list[ctx.author.mention]}', ephemeral=True)
+        if ctx.author.mention in players:
+            tid = players[ctx.author.mention].train_id
+            # Clear info from train record
+            curr_trains[tid].engineer = 'None'
+            curr_trains[tid].discord_id = None
+            curr_trains[tid].job_thread = None
+            del players[ctx.author.mention]  # Remove this player record
+            if tag_to_add not in current_tags:
+                current_tags.append(tag_to_add)
+            if tag1_to_remove in current_tags:
+                current_tags.remove(tag1_to_remove)
+            if tag2_to_remove in current_tags:
+                current_tags.remove(tag2_to_remove)
+            msg = (f'{curr_trains[tid].last_time_moved} {ctx.author.display_name} marked train '
+                   f'{curr_trains[tid].symbol} {COMPLETED_TAG}')
+            if notes:
+                msg += f'. Notes: {notes}'
+            await thread.send(msg)
+            await thread.edit(applied_tags=current_tags)
+            log_msg(msg)
+            await send_ch_msg(CH_LOG, msg)
+            r8gptDB.add_event(curr_trains[tid].last_time_moved, ctx.author.display_name,
+                              'MARKED_COMPLETE', curr_trains[tid].symbol, event_db)
+            r8gptDB.save_db(DB_FILENAME, event_db)
+            return
         else:
             await ctx.respond(f'Unable to mark as complete; are you sure you are clocked in?', ephemeral=True)
     except discord.Forbidden:
@@ -392,29 +429,34 @@ async def complete(ctx: discord.ApplicationContext, symbol: str, notes: str):
 @option('list_type', description='type of list (ai, player, idle, stuck)', required=True)
 async def r8list(ctx: discord.ApplicationContext, list_type: str):
     msg = ''
-    for tid in trains:
-        if list_type.lower() == 'ai':
-            if trains[tid].engineer.lower() == 'ai':
-                msg += (f'{trains[tid].symbol} [{tid}] # {trains[tid].lead_num},'
-                        f' Units: {trains[tid].num_units}\n')
-        elif list_type.lower() == 'player':
-            if trains[tid].discord_name:
-                msg += (f'{trains[tid].discord_name} : {trains[tid].symbol} [{tid}] # {trains[tid].lead_num},'
-                        f' Units: {trains[tid].num_units}\n')
-        elif list_type.lower() == 'stuck':
-            if tid in watched_trains:
-                td = last_world_datetime - trains[tid].last_time_moved
-                if trains[tid].engineer.lower() != 'ai':
-                    msg += f'{trains[tid].discord_name}'
-                else:
-                    msg += f'{trains[tid].engineer}'
-                msg += (f' : {trains[tid].symbol} [{tid}] # {trains[tid].lead_num},'
-                        f' # {trains[tid].lead_num}, Units: {trains[tid].num_units}, Stopped for: {td},'
-                        f' Location: {location(trains[tid].route, trains[tid].track)}\n')
-        else:
-            if trains[tid].engineer.lower() == 'none':
-                msg += (f'{trains[tid].symbol} [{tid}] # {trains[tid].lead_num},'
-                        f' Units: {trains[tid].num_units}\n')
+    if list_type.lower() == 'player':
+        for player in players:
+            tid = players[player].train_id
+            if players[player].train_symbol != curr_trains[tid].symbol:
+                msg += (f'{players[player].discord_name} :'
+                        f' **Inconsistent lead unit** // Orig leader: {players[player].train_symbol} // '
+                        f' Curr leader: {curr_trains[tid].symbol} //')
+            else:
+                msg += f'{players[player].discord_name} : {curr_trains[tid].symbol}'
+            msg += f' [{tid}] # {curr_trains[tid].lead_num}, Units: {curr_trains[tid].num_units}\n'
+
+    else:
+        for tid in curr_trains:
+            if list_type.lower() == 'ai':
+                if curr_trains[tid].engineer.lower() == 'ai':
+                    msg += (f'{curr_trains[tid].symbol} [{tid}] # {curr_trains[tid].lead_num},'
+                            f' Units: {curr_trains[tid].num_units}\n')
+            elif list_type.lower() == 'stuck':
+                if tid in watched_trains:
+                    td = last_world_datetime - curr_trains[tid].last_time_moved
+                    msg += f'{curr_trains[tid].engineer}'
+                    msg += (f' : {curr_trains[tid].symbol} [{tid}] # {curr_trains[tid].lead_num},'
+                            f' # {curr_trains[tid].lead_num}, Units: {curr_trains[tid].num_units}, Stopped for: {td},'
+                            f' DLC {location(curr_trains[tid].route, curr_trains[tid].track)}\n')
+            else:
+                if curr_trains[tid].engineer.lower() == 'none':
+                    msg += (f'{curr_trains[tid].symbol} [{tid}] # {curr_trains[tid].lead_num},'
+                            f' Units: {curr_trains[tid].num_units}\n')
     if len(msg) < 1:
         msg = f'No {list_type} trains found.'
     if len(msg) > DISCORD_CHAR_LIMIT:
@@ -430,10 +472,8 @@ async def r8list(ctx: discord.ApplicationContext, list_type: str):
 @bot.slash_command(name='train_info', description="Display info of individual train")
 @option('tid', required=True, description='Train ID')
 async def train_info(ctx: discord.ApplicationContext, tid: str):
-    if tid in trains:
-        msg = (f'{trains[tid].engineer} : {trains[tid].symbol} [{tid}]'
-               f' # {trains[tid].lead_num}, total cars: {trains[tid].num_units}, last move:'
-               f' {trains[tid].last_time_moved}\n')
+    if tid in curr_trains:
+        msg = str(curr_trains[tid])
     else:
         msg = f'Train {tid} not found.'
     await ctx.respond(msg, ephemeral=True)
@@ -443,131 +483,72 @@ async def train_info(ctx: discord.ApplicationContext, tid: str):
 async def scan_world_state():
     global fp
     global last_world_datetime
-    global trains
-    global last_modified  # designated global to keep track between calls
+    global last_worldsave_modified_time  # designated global to keep track between calls
 
-    async def send_ch_msg(ch_name, ch_msg):
-        """
-        Send messages to discord channel
-        :param ch_name: name of discord channel to write message to
-        :param ch_msg: Message content
-        :return: 0 if successful, -1 if error
-        """
-        if ch_msg.lower() == 'none':
-            return 0
-
-        if len(ch_msg) > DISCORD_CHAR_LIMIT - 100:
-            ch_msg = ch_msg[:DISCORD_CHAR_LIMIT - 100] + '[...truncated...]'
-
-        for guild in bot.guilds:
-            if type(ch_name) == str:
-                for channel in guild.text_channels + guild.forum_channels:
-                    threads = channel.threads
-                    for thread in threads:
-                        if thread.name.lower() == ch_name.lower():
-                            # write to matching thread name
-                            try:
-                                retval = await thread.send('[r8GPT] ' + ch_msg)
-
-                            except Exception as e:
-                                print(f"Error in scan_world_state/send_ch_msg(1): {e}")
-
-                            log_msg(ch_msg)
-                            return retval
-
-                    if channel.name.lower() == ch_name.lower():
-                        # Write to a matching channel name
-                        try:
-                            retval = await channel.send('[r8GPT] ' + ch_msg)
-                        except Exception as e:
-                            print(f"Error in scan_world_state/send_ch_msg(2): {e}")
-
-                        log_msg(ch_msg)
-                        return retval
-            else:
-                try:
-                    retval = await ch_name.send('[r8GPT] ' + ch_msg)
-
-                except Exception as e:
-                    print(f"Error in scan_world_state/send_ch_msg(1): {e}")
-
-                log_msg(ch_msg)
-                return retval
-
-        print(f"[Warning] thread / channel {ch_name} not found.")
-        return -1
-
-    if len(trains) == 0:  # No trains means we need to read initial state
-        last_modified = os.stat(SAVENAME).st_mtime  # Time
-        last_world_datetime = update_world_state()
-        msg = (f'** {last_world_datetime} Initializing ** '
-               f'Total number of trains: {train_count("all")} (AI trains: {train_count("ai")},'
-               f' player trains: {train_count("player")}) ')
+    # Check for initial startup
+    if len(curr_trains) == 0:  # No trains means we need to read initial state
+        last_worldsave_modified_time = os.stat(SAVENAME).st_mtime  # Time
+        last_world_datetime = update_world_state(curr_trains)
+        msg = (f'{last_world_datetime} **--> INITIALIZING NEW WORLD STATE <--** '
+               f'Total number of trains: {train_count("all", curr_trains, watched_trains)} '
+               f'(AI trains: {train_count("ai", curr_trains, watched_trains)},'
+               f' player trains: {train_count("player", curr_trains, watched_trains)}) ')
         print(msg)
         await send_ch_msg(CH_LOG, msg)
+        await strike_stuck_msgs(CH_ALERT)   # Get rid of any chaff from previous alerts
+
     # Check for server reboot
-    elif (os.stat(SAVENAME).st_mtime - last_modified) > REBOOT_TIME:
+    elif (os.stat(SAVENAME).st_mtime - last_worldsave_modified_time) > REBOOT_TIME:
         await send_ch_msg(CH_LOG, '**Apparent server reboot** : Re-syncing train states')
         # Look for and archive player trains and capture existing player records
         player_updates = list()
-        for pid in player_list:
-            tid = player_list[pid]
-            player_updates.append([trains[tid].engineer, trains[tid].discord_name,
-                                   trains[tid].symbol, trains[tid].job_thread])
-        player_list.clear()
+        for player in players:
+            tid = find_tid(players[player].train_symbol, curr_trains)
+            player_updates.append([players[player].discord_id, players[player].discord_name,
+                                   players[player].train_symbol, players[player].job_thread])
+        players.clear()
         # Repopulate trains
-        last_modified = os.stat(SAVENAME).st_mtime  # Time
-        last_world_datetime = update_world_state()
+        last_worldsave_modified_time = os.stat(SAVENAME).st_mtime  # Time
+        last_world_datetime = update_world_state(curr_trains)
         # Re-add players
         for player in player_updates:
-            player_crew_train(find_tid(player[2]), player[0], player[1], player[3], last_world_datetime)
+            player_crew_train(curr_trains, find_tid(player[2], curr_trains), player[0], player[1], player[3],
+                              last_world_datetime)
         player_updates.clear()
         watched_trains.clear()
-        msg = (f'** {last_world_datetime} Initializing ** '
-               f'Total number of trains: {train_count("all")} (AI trains: {train_count("ai")},'
-               f' player trains: {train_count("player")}) ')
+        msg = (f'{last_world_datetime} **--> INITIALIZING NEW WORLD STATE <--** '
+               f'Total number of trains: {train_count("all", curr_trains, watched_trains)} '
+               f'(AI trains: {train_count("ai", curr_trains, watched_trains)},'
+               f' player trains: {train_count("player", curr_trains, watched_trains)}) ')
         print(msg)
         await send_ch_msg(CH_LOG, msg)
+        await strike_stuck_msgs(CH_ALERT)   # Get rid of any chaff from previous alerts
+
+
     #
     # Begin scanning world saves
     #
     # Check time stamp on world save file for an updated version
-    if os.stat(SAVENAME).st_mtime != last_modified:
+    if os.stat(SAVENAME).st_mtime != last_worldsave_modified_time:
         # Updated world save found
-        last_modified = os.stat(SAVENAME).st_mtime
-        last_trains = trains.copy()  # Archive our current set of trains for comparison
-        last_world_datetime = update_world_state()  # Update the trains dictionary
-        # Check if any player trains have lead loco changed
-        deleted_players = list()
-        for player in player_list:
-            orig_tid = player_list[player]
-            orig_symbol = last_trains[orig_tid].symbol
-            if orig_tid != find_tid(orig_symbol):
-                # The lead loco TID has changed
-                new_tid = find_tid(orig_symbol)
-                print(f'Train {orig_symbol} ({orig_tid}) has changed ID to {new_tid}')
-                pid = last_trains[orig_tid].engineer
-                disp = last_trains[orig_tid].discord_name
-                thr = last_trains[orig_tid].job_thread
-                tim = last_trains[orig_tid].last_time_moved
-                player_crew_train(new_tid, pid, disp, thr, tim)
-                trains[new_tid].job_thread = last_trains[orig_tid].job_thread
+        last_worldsave_modified_time = os.stat(SAVENAME).st_mtime
+        last_trains = curr_trains.copy()  # Archive our current set of trains for comparison
+        last_world_datetime = update_world_state(curr_trains)  # Update the trains dictionary
 
         # Check to see if any trains have been deleted
         nbr_ai_removed = 0
         trains_removed = list()
         for tid in last_trains:
-            if tid not in trains:
+            if tid not in curr_trains:
                 trains_removed.append(tid)
                 nbr_ai_removed += 1
-                if len(last_trains[tid].discord_name) > 0:
-                    eng_name = last_trains[tid].discord_name
+                if len(last_trains[tid].discord_id) > 0:  # Is this train crewed by a player?
+                    eng_name = last_trains[tid].engineer  # copy that player info
                 else:
                     eng_name = last_trains[tid].engineer
                 msg = f'{last_world_datetime} Train removed: {last_trains[tid].symbol} [{eng_name}] ({tid})'
                 await send_ch_msg(CH_LOG, msg)
                 await asyncio.sleep(.5)
-
                 print(msg)
                 if tid in watched_trains:
                     for msg in alert_messages[tid]:  # Change previous alerts
@@ -580,9 +561,33 @@ async def scan_world_state():
                     del alert_messages[tid]
                     del watched_trains[tid]
 
-            elif trains[tid].symbol != last_trains[tid].symbol:
-                print(f'{last_world_datetime} Train re-tagged: {tid} has changed tags since last update '
-                      f'({last_trains[tid].symbol} -> {trains[tid].symbol}); Updating record.')
+        # Run through each player symbol and check that the symbol to tid correspondence hasn't changed
+        # Also, populate player / job info on new train dict
+        for pid in players:
+            for tid in curr_trains:
+                if players[pid].train_symbol.lower() == curr_trains[tid].symbol.lower():
+                    print(f'Found player train {players[pid].discord_name} : {players[pid].train_symbol}')
+                    if players[pid].train_id != curr_trains[tid].train_id:
+                        print(f'Player {players[pid].discord_name} train [{players[pid].train_symbol} has changed ID '
+                              f'from {players[pid].train_id} to {curr_trains[tid].train_id}. Updating player record.')
+                        players[pid].train_id = curr_trains[tid].train_id
+                    curr_trains[tid].discord_id = players[pid].discord_id
+                    curr_trains[tid].engineer = players[pid].discord_name
+                    curr_trains[tid].job_thread = players[pid].job_thread
+                else:
+                    for car in curr_trains[tid].consist:
+                        if players[pid].train_symbol.lower() == car.dest_tag.lower():
+                            print(f'Found player train {players[pid].discord_name} : {players[pid].train_symbol}'
+                                  f' but not on lead loco - perhaps they have switched leaders')
+                            if players[pid].train_id != curr_trains[tid].train_id:
+                                print(
+                                    f'Player {players[pid].discord_name} train [{players[pid].train_symbol} has changed ID '
+                                    f'from {players[pid].train_id} to {curr_trains[tid].train_id}. Updating player record.')
+                                players[pid].train_id = curr_trains[tid].train_id
+                            curr_trains[tid].discord_id = players[pid].discord_id
+                            curr_trains[tid].engineer = players[pid].discord_name
+                            curr_trains[tid].job_thread = players[pid].job_thread
+                # Else what if we can't find that symbol?
 
         nbr_ai_moving = 0
         nbr_player_moving = 0
@@ -590,32 +595,36 @@ async def scan_world_state():
         nbr_ai_added = 0
         nbr_player_stopped = 0
 
-        for tid in trains:
+        for tid in curr_trains:
             # Check for new trains
             if tid not in last_trains:
                 nbr_ai_added += 1
-                if len(trains[tid].discord_name) > 0:
-                    eng_name = trains[tid].discord_name
+                if len(curr_trains[tid].discord_id) > 0:
+                    eng_name = curr_trains[tid].engineer
                 else:
-                    eng_name = trains[tid].engineer
-                msg = f'{last_world_datetime} Train spawned: {trains[tid].symbol} [{eng_name}] ({tid})'
-                print(msg)
+                    eng_name = curr_trains[tid].engineer
+                msg = f'{last_world_datetime} Train spawned: {curr_trains[tid].symbol} [{eng_name}] ({tid})'
                 await send_ch_msg(CH_LOG, msg)
                 await asyncio.sleep(.5)
+                print(msg)
+
             # Check for moving AI or player trains
-            elif (trains[tid].engineer.lower() != 'none' and not
-            any(tag in trains[tid].symbol.lower() for tag in IGNORED_TAGS)):  # Ignore static and special tags
-                if (trains[tid].route != last_trains[tid].route
-                        or trains[tid].track != last_trains[tid].track
-                        or trains[tid].dist != last_trains[tid].dist):
+            elif (curr_trains[tid].engineer.lower() != 'none' and not
+            any(tag in curr_trains[tid].symbol.lower() for tag in IGNORED_TAGS)):  # Ignore static and special tags
+                if (curr_trains[tid].route != last_trains[tid].route
+                        or curr_trains[tid].track != last_trains[tid].track
+                        or curr_trains[tid].dist != last_trains[tid].dist):
                     # train HAS MOVED since last update
-                    if trains[tid].engineer.lower() == 'ai':
+                    if curr_trains[tid].engineer.lower() == 'ai':
                         nbr_ai_moving += 1
                     else:
                         nbr_player_moving += 1
-                        trains[tid].discord_name = last_trains[tid].discord_name
+                        curr_trains[tid].engineer = last_trains[tid].engineer
+                        curr_trains[tid].discord_id = last_trains[tid].discord_id
+                        curr_trains[tid].job_thread = last_trains[tid].job_thread
+
                     if tid in watched_trains:
-                        msg = (f' {GREEN_CIRCLE} {last_world_datetime} **ON THE MOVE**: Train {trains[tid].symbol}'
+                        msg = (f' {GREEN_CIRCLE} {last_world_datetime} **ON THE MOVE**: Train {curr_trains[tid].symbol}'
                                f' ({tid}) is now on the move after'
                                f' {last_world_datetime - last_trains[tid].last_time_moved}.')
                         await send_ch_msg(CH_ALERT, msg)
@@ -629,72 +638,74 @@ async def scan_world_state():
                             await msg.edit(content=new_msg)
                         del alert_messages[tid]
                         del watched_trains[tid]  # No longer need to watch
-                elif (trains[tid].route == last_trains[tid].route
-                      and trains[tid].track == last_trains[tid].track
-                      and trains[tid].dist == last_trains[tid].dist):
+                elif (curr_trains[tid].route == last_trains[tid].route
+                      and curr_trains[tid].track == last_trains[tid].track
+                      and curr_trains[tid].dist == last_trains[tid].dist):
                     # train HAS NOT MOVED since last update
-                    if trains[tid].engineer.lower() == 'ai':
+                    if curr_trains[tid].engineer.lower() == 'ai':
                         nbr_ai_stopped += 1
                     else:
                         nbr_player_stopped += 1
-                        trains[tid].discord_name = last_trains[tid].discord_name
-                        trains[tid].job_thread = last_trains[tid].job_thread
+                        curr_trains[tid].engineer = last_trains[tid].engineer
+                        curr_trains[tid].discord_id = last_trains[tid].discord_id
+                        curr_trains[tid].job_thread = last_trains[tid].job_thread
                     td = last_world_datetime - last_trains[tid].last_time_moved
-                    sub = LOCATION_DB[int(trains[tid].route[0])]
-                    if (trains[tid].engineer.lower() == 'ai' and td > timedelta(minutes=AI_ALERT_TIME) or
-                            trains[tid].engineer.lower() != 'ai' and td > timedelta(minutes=PLAYER_ALERT_TIME)):
+                    if (curr_trains[tid].engineer.lower() == 'ai' and td > timedelta(minutes=AI_ALERT_TIME) or
+                            curr_trains[tid].engineer.lower() != 'ai' and td > timedelta(minutes=PLAYER_ALERT_TIME)):
                         if tid not in watched_trains:
-                            watched_trains[tid] = [trains[tid].last_time_moved, 1]
-                            log_msg(f'Added {tid}: {trains[tid].symbol} to watched trains')
-                            if trains[tid].engineer.lower() == 'ai':
+                            watched_trains[tid] = [curr_trains[tid].last_time_moved, 1]
+                            log_msg(f'Added {tid}: {curr_trains[tid].symbol} to watched trains')
+                            if curr_trains[tid].engineer.lower() == 'ai':
                                 msg = f' {RED_SQUARE} {last_world_datetime} **POSSIBLE STUCK TRAIN**: '
-                                msg += (f' [{trains[tid].engineer}] {trains[tid].symbol} ({tid})'
+                                msg += (f' [{curr_trains[tid].engineer}] {curr_trains[tid].symbol} ({tid})'
                                         f' has not moved for {td}, '
-                                        f'Location: {location(trains[tid].route, trains[tid].track)}.')
+                                        f'DLC {location(curr_trains[tid].route, curr_trains[tid].track)}.')
                                 alert_messages[tid].append(await send_ch_msg(CH_ALERT, msg))
                             else:
                                 alert_msg = f' {RED_SQUARE} {last_world_datetime} **POSSIBLE STUCK TRAIN**: '
-                                alert_msg += (f' [{trains[tid].discord_name}] {trains[tid].symbol} ({tid})'
+                                alert_msg += (f' [{curr_trains[tid].engineer}] {curr_trains[tid].symbol} ({tid})'
                                               f' has not moved for {td}, '
-                                              f'Location: {location(trains[tid].route, trains[tid].track)}.')
+                                              f'DLC {location(curr_trains[tid].route, curr_trains[tid].track)}.')
                                 alert_messages[tid].append(await send_ch_msg(CH_ALERT, alert_msg))
                                 await asyncio.sleep(.5)
-                                player_msg = (f'{trains[tid].engineer}: You are currently crewing {trains[tid].symbol},'
-                                              f' yet your train has not moved for at least {td}. Should you tie down?')
-                                forum_thread = await bot.fetch_channel(trains[tid].job_thread)
+                                player_msg = (
+                                    f'{curr_trains[tid].engineer}: You are currently crewing {curr_trains[tid].symbol},'
+                                    f' yet your train has not moved for at least {td}. Should you tie down?')
+                                forum_thread = await bot.fetch_channel(curr_trains[tid].job_thread)
                                 alert_messages[tid].append(await send_ch_msg(forum_thread, player_msg))
                             await asyncio.sleep(.5)
-                        elif ((trains[tid].last_time_moved - watched_trains[tid][0])
+                        elif ((curr_trains[tid].last_time_moved - watched_trains[tid][0])
                               // watched_trains[tid][1] > timedelta(minutes=REMINDER_TIME)):
                             watched_trains[tid][1] += 1
-                            if trains[tid].engineer.lower() == 'ai':
+                            if curr_trains[tid].engineer.lower() == 'ai':
                                 msg = (f' {RED_EXCLAMATION} {last_world_datetime}'
                                        f' **STUCK TRAIN REMINDER # {watched_trains[tid][1] - 1}**: ')
-                                msg += (f'[{trains[tid].engineer}] {trains[tid].symbol} ({tid})'
+                                msg += (f'[{curr_trains[tid].engineer}] {curr_trains[tid].symbol} ({tid})'
                                         f' has not moved for {td}, '
-                                        f'Location: {location(trains[tid].route, trains[tid].track)}.')
+                                        f'DLC {location(curr_trains[tid].route, curr_trains[tid].track)}.')
                                 alert_messages[tid].append(await send_ch_msg(CH_ALERT, msg))
                                 await asyncio.sleep(.5)
                             else:
                                 alert_msg = (f' {RED_EXCLAMATION} {last_world_datetime} **STUCK TRAIN REMINDER #'
                                              f' {watched_trains[tid][1] - 1}**: ')
-                                alert_msg += (f' [{trains[tid].discord_name}] {trains[tid].symbol} ({tid})'
+                                alert_msg += (f' [{curr_trains[tid].engineer}] {curr_trains[tid].symbol} ({tid})'
                                               f' has not moved for {td}, '
-                                              f'Location: {location(trains[tid].route, trains[tid].track)}.')
+                                              f'DLC {location(curr_trains[tid].route, curr_trains[tid].track)}.')
                                 alert_messages[tid].append(await send_ch_msg(CH_ALERT, alert_msg))
                                 await asyncio.sleep(.5)
-                                player_msg = (f'{trains[tid].engineer}: You are currently crewing {trains[tid].symbol},'
-                                              f' yet your train has not moved for at least {td}. Should you tie down?')
-                                forum_thread = await bot.fetch_channel(trains[tid].job_thread)
+                                player_msg = (
+                                    f'{curr_trains[tid].engineer}: You are currently crewing {curr_trains[tid].symbol},'
+                                    f' yet your train has not moved for at least {td}. Should you tie down?')
+                                forum_thread = await bot.fetch_channel(curr_trains[tid].job_thread)
                                 alert_messages[tid].append(await send_ch_msg(forum_thread, player_msg))
                         else:
                             pass  # We have already notified at least once, now backing off before another notice
-                    print(f'[{trains[tid].engineer}] {trains[tid].symbol} ({tid}) has not moved for {td}, '
-                          f'Location: {location(trains[tid].route, trains[tid].track)}')
-                    trains[tid].last_time_moved = last_trains[tid].last_time_moved
-                    trains[tid].job_thread = last_trains[tid].job_thread
+                    print(f'[{curr_trains[tid].engineer}] {curr_trains[tid].symbol} ({tid}) has not moved for {td}, '
+                          f'DLC {location(curr_trains[tid].route, curr_trains[tid].track)}')
+                    curr_trains[tid].last_time_moved = last_trains[tid].last_time_moved
+                    curr_trains[tid].job_thread = last_trains[tid].job_thread
                 else:
-                    print(f'something odd in comparing these two:\n{trains[tid]}\n{last_trains[tid]}')
+                    print(f'something odd in comparing these two:\n{curr_trains[tid]}\n{last_trains[tid]}')
 
         msg = (f'{last_world_datetime} Summary: AI ({nbr_ai_moving}M, {nbr_ai_stopped}S, +{nbr_ai_added}, '
                f'-{nbr_ai_removed}) | Player ({nbr_player_moving}M, {nbr_player_stopped}S) | '
