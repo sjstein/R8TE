@@ -567,7 +567,6 @@ async def scan_world_state():
         for pid in players:
             for tid in curr_trains:
                 if players[pid].train_symbol.lower() == curr_trains[tid].symbol.lower():
-                    print(f'Found player train {players[pid].discord_name} : {players[pid].train_symbol}')
                     if players[pid].train_id != curr_trains[tid].train_id:
                         print(f'Player {players[pid].discord_name} train [{players[pid].train_symbol} has changed ID '
                               f'from {players[pid].train_id} to {curr_trains[tid].train_id}. Updating player record.')
