@@ -1,8 +1,8 @@
 import asyncio
 from collections import defaultdict
-import discord                              # noqa This libray is covered in py-cord
-from discord.ext import tasks               # noqa This libray is covered in py-cord
-from discord import option                  # noqa This libray is covered in py-cord
+import discord  # noqa This libray is covered in py-cord
+from discord.ext import tasks  # noqa This libray is covered in py-cord
+from discord import option  # noqa This libray is covered in py-cord
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta
 import os
@@ -16,8 +16,8 @@ DEBUG = True
 
 # Necessary Bot intents
 intents = discord.Intents.default()
-intents.guilds = True           # noqa
-intents.messages = True         # noqa
+intents.guilds = True  # noqa
+intents.messages = True  # noqa
 intents.message_content = True  # noqa
 
 SAVENAME = WORLDSAVE_PATH + '/Auto Save World.xml'
@@ -80,9 +80,9 @@ def location(route_id, track_index):
         return sub
 
 
-curr_trains = dict()                # Dict of all trains in the world
-watched_trains = dict()             # Dict of trains which are stalled/stuck
-players = dict()                    # Dict of player controlled trains
+curr_trains = dict()  # Dict of all trains in the world
+watched_trains = dict()  # Dict of trains which are stalled/stuck
+players = dict()  # Dict of player controlled trains
 alert_messages = defaultdict(list)  # Dict of messages sent to alert channel
 
 global fp  # File pointer to log
@@ -235,37 +235,71 @@ async def send_ch_msg(ch_name, ch_msg):
     return -1
 
 
-async def strike_stuck_msgs(target_channel: str):
-    for guild in bot.guilds:
-        for channel in guild.text_channels + guild.forum_channels:
-            if channel.name == target_channel:
-                strike_it = False
-                async for message in channel.history(limit=100):
-                    if RED_SQUARE in message.content:
-                        new_content = message.content.replace(RED_SQUARE, "").strip()
-                        strike_it = True
-                    elif RED_EXCLAMATION in message.content:
-                        new_content = message.content.replace(RED_EXCLAMATION, "").strip()
-                        strike_it = True
-                    elif GREEN_CIRCLE in message.content:
-                        new_content = message.content.replace(GREEN_CIRCLE, "").strip()
-                        strike_it = True
-                    elif AXE in message.content:
-                        new_content = message.content.replace(AXE, "").strip()
-                        strike_it = True
+async def strike_alert_msgs(target_channel, tid=None, update_message=None):
+    # Strike out alert messages for a particular train or the entire channel
+    if tid:     # This is a specific set of messages to delete
+        if update_message:
+            await send_ch_msg(target_channel, update_message)
+            await asyncio.sleep(.5)
+            log_msg(update_message)
+        for msg in alert_messages[tid]:  # Change previous alerts
+            strike_it = False
+            if RED_SQUARE in msg.content:
+                new_content = msg.content.replace(RED_SQUARE, "").strip()
+                strike_it = True
+            elif RED_EXCLAMATION in msg.content:
+                new_content = msg.content.replace(RED_EXCLAMATION, "").strip()
+                strike_it = True
+            if strike_it:
+                # Don't double-strikethrough
+                if not (new_content.startswith("~~") and new_content.endswith("~~")):  # noqa
+                    new_content = f"~~{new_content}~~"
 
-                    if strike_it:
-                        # Don't double-strikethrough
-                        if not (new_content.startswith("~~") and new_content.endswith("~~")):   # noqa
-                            new_content = f"~~{new_content}~~"
-                        strike_it = False
+                try:
+                    await msg.edit(content=new_content)
+                    await asyncio.sleep(.5)
 
-                        try:
-                            await message.edit(content=new_content)
-                        except discord.Forbidden:
-                            print(f"Missing permissions to edit message ID {message.id}.")
-                        except discord.HTTPException as e:
-                            print(f"Failed to edit message ID {message.id}: {e}")
+                except discord.Forbidden:
+                    print(f"Missing permissions to edit message ID {msg.id}.")
+                except discord.HTTPException as e:
+                    print(f"Failed to edit message ID {msg.id}: {e}")
+
+                await msg.edit(content=new_content)
+        del alert_messages[tid]
+        return
+    else:       # We are removing (striking out) all messages in the channel
+        for guild in bot.guilds:
+            for channel in guild.text_channels + guild.forum_channels:
+                if channel.name == target_channel:
+                    strike_it = False
+                    async for message in channel.history(limit=100):
+                        if RED_SQUARE in message.content:
+                            new_content = message.content.replace(RED_SQUARE, "").strip()
+                            strike_it = True
+                        elif RED_EXCLAMATION in message.content:
+                            new_content = message.content.replace(RED_EXCLAMATION, "").strip()
+                            strike_it = True
+                        elif GREEN_CIRCLE in message.content:
+                            new_content = message.content.replace(GREEN_CIRCLE, "").strip()
+                            strike_it = True
+                        elif AXE in message.content:
+                            new_content = message.content.replace(AXE, "").strip()
+                            strike_it = True
+
+                        if strike_it:
+                            # Don't double-strikethrough
+                            if not (new_content.startswith("~~") and new_content.endswith("~~")):  # noqa
+                                new_content = f"~~{new_content}~~"
+                            strike_it = False
+
+                            try:
+                                await message.edit(content=new_content)
+                                await asyncio.sleep(.5)
+
+                            except discord.Forbidden:
+                                print(f"Missing permissions to edit message ID {message.id}.")
+                            except discord.HTTPException as e:
+                                print(f"Failed to edit message ID {message.id}: {e}")
 
 
 @bot.slash_command(name='crew', description=f"Crew a train")
@@ -364,17 +398,10 @@ async def tie_down(ctx: discord.ApplicationContext, location: str):
                 # This train has a watch on it - time to remove, and strike-thru previous alert messages
                 msg = (f' {GREEN_CIRCLE} {last_world_datetime} **TIED DOWN**: Train {curr_trains[tid].symbol}'
                        f' ({tid}) has been tied down by {orig_engineer}')
-                await send_ch_msg(CH_ALERT, msg)
+                await strike_alert_msgs(CH_ALERT,tid, msg)
                 await asyncio.sleep(.5)
-                log_msg(msg)
-                for msg in alert_messages[tid]:  # Change previous alerts
-                    if msg.content[10] == 'r':  # Message has the red square
-                        new_msg = f'~~{msg.content[22:]}~~'  # Put a strikethru on previous message
-                    else:  # Message has the red exclamation
-                        new_msg = f'~~{msg.content[23:]}~~'
-                    await msg.edit(content=new_msg)
-                del alert_messages[tid]
                 del watched_trains[tid]  # No longer need to watch
+
             return
         else:
             await ctx.respond(f'**ERROR** Unable to tie-down: '
@@ -438,17 +465,10 @@ async def complete(ctx: discord.ApplicationContext, symbol: str, notes: str):
                 # This train has a watch on it - time to remove, and strike-thru previous alert messages
                 msg = (f' {GREEN_CIRCLE} {last_world_datetime} **POWERED DOWN**: Train {curr_trains[tid].symbol}'
                        f' ({tid}) has been tied down by {orig_engineer}')
-                await send_ch_msg(CH_ALERT, msg)
+                await strike_alert_msgs(CH_ALERT, tid, msg)
                 await asyncio.sleep(.5)
-                log_msg(msg)
-                for msg in alert_messages[tid]:  # Change previous alerts
-                    if msg.content[10] == 'r':  # Message has the red square
-                        new_msg = f'~~{msg.content[22:]}~~'  # Put a strikethru on previous message
-                    else:  # Message has the red exclamation
-                        new_msg = f'~~{msg.content[23:]}~~'
-                    await msg.edit(content=new_msg)
-                del alert_messages[tid]
                 del watched_trains[tid]  # No longer need to watch
+
             return
         else:
             await ctx.respond(f'Unable to mark as complete; are you sure you are clocked in?', ephemeral=True)
@@ -528,7 +548,7 @@ async def scan_world_state():
                f' player trains: {train_count("player", curr_trains, watched_trains)}) ')
         print(msg)
         await send_ch_msg(CH_LOG, msg)
-        await strike_stuck_msgs(CH_ALERT)   # Get rid of any chaff from previous alerts
+        await strike_alert_msgs(CH_ALERT)  # Get rid of any chaff from previous alerts
 
     # Check for server reboot
     elif (os.stat(SAVENAME).st_mtime - last_worldsave_modified_time) > REBOOT_TIME:
@@ -555,8 +575,7 @@ async def scan_world_state():
                f' player trains: {train_count("player", curr_trains, watched_trains)}) ')
         print(msg)
         await send_ch_msg(CH_LOG, msg)
-        await strike_stuck_msgs(CH_ALERT)   # Get rid of any chaff from previous alerts
-
+        await strike_alert_msgs(CH_ALERT)  # Get rid of any chaff from previous alerts
 
     #
     # Begin scanning world saves
@@ -584,15 +603,11 @@ async def scan_world_state():
                 await asyncio.sleep(.5)
                 print(msg)
                 if tid in watched_trains:
-                    for msg in alert_messages[tid]:  # Change previous alerts
-                        await msg.delete()  # Delete message
                     msg = (f' {AXE} {last_world_datetime} **TRAIN DELETED**:'
                            f' [{last_trains[tid].engineer}] {last_trains[tid].symbol} ({tid}) has been deleted.')
-                    await send_ch_msg(CH_ALERT, msg)
+                    await strike_alert_msgs(CH_ALERT, tid, msg)
                     await asyncio.sleep(.5)
-
-                    del alert_messages[tid]
-                    del watched_trains[tid]
+                    del watched_trains[tid]  # No longer need to watch
 
         # Run through each player symbol and check that the symbol to tid correspondence hasn't changed
         # Also, populate player / job info on new train dict
@@ -660,16 +675,8 @@ async def scan_world_state():
                         msg = (f' {GREEN_CIRCLE} {last_world_datetime} **ON THE MOVE**: Train {curr_trains[tid].symbol}'
                                f' ({tid}) is now on the move after'
                                f' {last_world_datetime - last_trains[tid].last_time_moved}.')
-                        await send_ch_msg(CH_ALERT, msg)
+                        await strike_alert_msgs(CH_ALERT, tid, msg)
                         await asyncio.sleep(.5)
-                        log_msg(msg)
-                        for msg in alert_messages[tid]:  # Change previous alerts
-                            if msg.content[10] == 'r':  # Message has the red square
-                                new_msg = f'~~{msg.content[22:]}~~'  # Put a strikethru on previous message
-                            else:  # Message has the red exclamation
-                                new_msg = f'~~{msg.content[23:]}~~'
-                            await msg.edit(content=new_msg)
-                        del alert_messages[tid]
                         del watched_trains[tid]  # No longer need to watch
                 elif (curr_trains[tid].route == last_trains[tid].route
                       and curr_trains[tid].track == last_trains[tid].track
