@@ -75,9 +75,12 @@ def location(route_id, track_index):
     trk = int(track_index[0])
 
     if sub in LOCATION_DB:
-        return LOCATION_DB[sub]
+        try:
+            return LOCATION_DB[sub]
+        except KeyError:
+            return route_id
     else:
-        return sub
+        return route_id
 
 
 curr_trains = dict()  # Dict of all trains in the world

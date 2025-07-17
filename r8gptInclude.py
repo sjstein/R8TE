@@ -118,8 +118,17 @@ try:
                    130: 'Seligman',
                    140: 'CSX A-line',
                    150: 'Barstow/Yermo',
+                   170: 'Selkirk',
                    200: 'San Bernardino',
+                   210: 'Waycross',
+                   230: 'Fitzgerald',
+                   240: 'Mohawk',
                    250: 'Bakersfield',
+                   260: 'Roseville',
+                   280: 'AGS South',
+                   290: 'Pittsburgh East',
+                   310: 'Arvin/Oak Creek',
+                   320: 'Trona',
                    340: 'Modesto'}
 
 
