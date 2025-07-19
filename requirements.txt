@@ -8,3 +8,4 @@ multidict==6.4.3
 propcache==0.3.1
 py-cord==2.6.1
 yarl==1.20.0
+audioop-lts >=0.2.1; python_version>='3.13' # only required until discord updates their api dependency on audioop
