@@ -535,6 +535,19 @@ async def train_info(ctx: discord.ApplicationContext, tid: str):
     await ctx.respond(msg, ephemeral=True)
 
 
+@bot.slash_command(name="check_symbol", description="Check for existence of a train symbol")
+@option('symbol', description='symbol', required=True)
+async def check_symbol(ctx: discord.ApplicationContext, symbol: str):
+    msg = ''
+    for tid in curr_trains:
+        if curr_trains[tid].symbol == symbol:
+            msg += (f'({tid}) {curr_trains[tid].symbol} [#{curr_trains[tid].lead_num}] : '
+                    f'{location(curr_trains[tid].route, curr_trains[tid].track)}\n')
+    if len(msg) < 1:
+        msg = f'Train {symbol} not found.'
+    await ctx.respond(msg, ephemeral=True)
+
+
 @tasks.loop(seconds=SCAN_TIME)
 async def scan_world_state():
     global fp
