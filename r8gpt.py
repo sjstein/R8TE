@@ -610,10 +610,7 @@ async def scan_world_state():
             if tid not in curr_trains:
                 trains_removed.append(tid)
                 nbr_ai_removed += 1
-                if len(last_trains[tid].discord_id) > 0:  # Is this train crewed by a player?
-                    eng_name = last_trains[tid].engineer  # copy that player info
-                else:
-                    eng_name = last_trains[tid].engineer
+                eng_name = last_trains[tid].engineer
                 msg = f'{last_world_datetime} Train removed: {last_trains[tid].symbol} [{eng_name}] ({tid})'
                 await send_ch_msg(CH_LOG, msg)
                 await asyncio.sleep(.5)
@@ -662,10 +659,7 @@ async def scan_world_state():
             # Check for new trains
             if tid not in last_trains:
                 nbr_ai_added += 1
-                if len(curr_trains[tid].discord_id) > 0:
-                    eng_name = curr_trains[tid].engineer
-                else:
-                    eng_name = curr_trains[tid].engineer
+                eng_name = curr_trains[tid].engineer
                 msg = f'{last_world_datetime} Train spawned: {curr_trains[tid].symbol} [{eng_name}] ({tid})'
                 await send_ch_msg(CH_LOG, msg)
                 await asyncio.sleep(.5)
