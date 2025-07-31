@@ -23,6 +23,7 @@ intents.message_content = True  # noqa
 SAVENAME = WORLDSAVE_PATH + '/Auto Save World.xml'
 DIESEL_ENGINE = 'US_DieselEngine'
 DISCORD_CHAR_LIMIT = 2000
+DISTANCE_JITTER = 1.0       # Difference value used to determine if a train is moving
 TMP_FILENAME = 'r8gpt_msg.txt'
 
 event_db = list()
@@ -41,38 +42,39 @@ def parse_train_loader(root):
         for rail_vehicle in unit_loader.iter('RailVehicleStateClass'):
             file_name = rail_vehicle.find('rvXMLfilename').text
             unit_type = rail_vehicle.find('unitType').text
+            route_prefix_1 = rail_vehicle.find('currentRoutePrefix')[0].text
+            track_index_1 = rail_vehicle.find('currentTrackSectionIndex')[0].text
+            start_node_1 = rail_vehicle.find('startNodeIndex')[0].text
+            distance_1 = rail_vehicle.find('distanceTravelledInMeters')[0].text
+            reverse_1 = rail_vehicle.find('reverseDirection')[0].text
             if len(rail_vehicle.find("currentRoutePrefix")) > 1:
-                route_prefix = (rail_vehicle.find('currentRoutePrefix')[0].text,
-                                rail_vehicle.find('currentRoutePrefix')[1].text)
-                track_index = (rail_vehicle.find('currentTrackSectionIndex')[0].text,
-                               rail_vehicle.find('currentTrackSectionIndex')[1].text)
-                start_node = (rail_vehicle.find('startNodeIndex')[0].text,
-                              rail_vehicle.find('startNodeIndex')[1].text)
-                distance = (rail_vehicle.find('distanceTravelledInMeters')[0].text,
-                            rail_vehicle.find('distanceTravelledInMeters')[1].text)
-                reverse = (rail_vehicle.find('reverseDirection')[0].text,
-                           rail_vehicle.find('reverseDirection')[1].text)
+                route_prefix_2 = rail_vehicle.find('currentRoutePrefix')[1].text
+                track_index_2 = rail_vehicle.find('currentTrackSectionIndex')[1].text
+                start_node_2 = rail_vehicle.find('startNodeIndex')[1].text
+                distance_2 = rail_vehicle.find('distanceTravelledInMeters')[1].text
+                reverse_2 = rail_vehicle.find('reverseDirection')[1].text
             else:
-                route_prefix = rail_vehicle.find('currentRoutePrefix')[0].text
-                track_index = rail_vehicle.find('currentTrackSectionIndex')[0].text
-                start_node = rail_vehicle.find('startNodeIndex')[0].text
-                distance = rail_vehicle.find('distanceTravelledInMeters')[0].text
-                reverse = rail_vehicle.find('reverseDirection')[0].text
+                route_prefix_2 = None
+                track_index_2 = None
+                start_node_2 = None
+                distance_2 = None
+                reverse_2 = None
             load_weight = rail_vehicle.find('loadWeightUSTons').text
             dest_tag = rail_vehicle.find('destinationTag').text
             unit_number = rail_vehicle.find('unitNumber').text
             hazmat_tag = rail_vehicle.find('hazmatPlacardIndex').text
             units.append(
-                Car(file_name, unit_type, route_prefix, track_index, start_node, distance, reverse, load_weight,
-                    dest_tag, unit_number, hazmat_tag))
+                Car(file_name, unit_type, route_prefix_1, route_prefix_2, track_index_1, track_index_2, start_node_1,
+                    start_node_2, distance_1, distance_2, reverse_1, reverse_2, load_weight, dest_tag, unit_number,
+                    hazmat_tag))
         cuts.append(Cut(train_id, was_ai, direction, speed_limit, prev_signal, units.copy()))
         units.clear()
     return cuts
 
 
 def location(route_id, track_index):
-    sub = int(route_id[0])
-    trk = int(track_index[0])
+    sub = int(route_id)
+    trk = int(track_index)
 
     if sub in LOCATION_DB:
         try:
@@ -104,9 +106,12 @@ def update_world_state(world_trains):
             tid = cut.train_id
             tag = cut.consist[0].dest_tag
             nbr = cut.consist[0].unit_number
-            rp = cut.consist[0].route
-            ts = cut.consist[0].track
-            dist = cut.consist[0].dist
+            rp_1 = cut.consist[0].route_1
+            rp_2 = cut.consist[0].route_2
+            ts_1 = cut.consist[0].track_1
+            ts_2 = cut.consist[0].track_2
+            dist_1 = cut.consist[0].dist_1
+            dist_2 = cut.consist[0].dist_2
             if tag in symbol_list:
                 if tag != 'None':
                     print(f'Duplicate symbol: [{tag}] found while parsing world save')
@@ -116,14 +121,12 @@ def update_world_state(world_trains):
                 train_type = 'Passenger'
             else:
                 train_type = 'Freight'
-            if cut.is_ai.lower() == 'true':
-                # Create AI crewed trains
-                world_trains[tid] = Train(tid, tag, nbr, train_type, len(cut.consist), 'AI', cut.consist.copy(),
-                                          world_save_datetime, rp, ts, dist)
+            if cut.is_ai is True:
+                eng = 'AI'
             else:
-                world_trains[tid] = Train(tid, tag, nbr, train_type, len(cut.consist),
-                                          'None', cut.consist.copy(), world_save_datetime, rp, ts, dist)
-
+                eng = 'None'
+            world_trains[tid] = Train(tid, tag, nbr, train_type, len(cut.consist), eng, cut.consist.copy(),
+                                      world_save_datetime, rp_1, rp_2, ts_1, ts_2, dist_1, dist_2)
         else:
             # First car is not a locomotive, so not a valid train
             pass
@@ -508,7 +511,7 @@ async def r8list(ctx: discord.ApplicationContext, list_type: str):
                     msg += f'{curr_trains[tid].engineer}'
                     msg += (f' : {curr_trains[tid].symbol} [{tid}] # {curr_trains[tid].lead_num},'
                             f' # {curr_trains[tid].lead_num}, Units: {curr_trains[tid].num_units}, Stopped for: {td},'
-                            f' DLC {location(curr_trains[tid].route, curr_trains[tid].track)}\n')
+                            f' DLC {location(curr_trains[tid].route_1, curr_trains[tid].track_1)}\n')
             else:
                 if curr_trains[tid].engineer.lower() == 'none':
                     msg += (f'{curr_trains[tid].symbol} [{tid}] # {curr_trains[tid].lead_num},'
@@ -527,9 +530,9 @@ async def r8list(ctx: discord.ApplicationContext, list_type: str):
 
 @bot.slash_command(name='train_info', description="Display info of individual train")
 @option('tid', required=True, description='Train ID')
-async def train_info(ctx: discord.ApplicationContext, tid: str):
+async def train_info(ctx: discord.ApplicationContext, tid: int):
     if tid in curr_trains:
-        msg = str(curr_trains[tid])
+        msg = curr_trains[tid]
     else:
         msg = f'Train {tid} not found.'
     await ctx.respond(msg, ephemeral=True)
@@ -542,7 +545,7 @@ async def check_symbol(ctx: discord.ApplicationContext, symbol: str):
     for tid in curr_trains:
         if curr_trains[tid].symbol == symbol:
             msg += (f'({tid}) {curr_trains[tid].symbol} [#{curr_trains[tid].lead_num}] : '
-                    f'{location(curr_trains[tid].route, curr_trains[tid].track)}\n')
+                    f'{location(curr_trains[tid].route_1, curr_trains[tid].track_1)}\n')
     if len(msg) < 1:
         msg = f'Train {symbol} not found.'
     await ctx.respond(msg, ephemeral=True)
@@ -668,9 +671,12 @@ async def scan_world_state():
             # Check for moving AI or player trains
             elif (curr_trains[tid].engineer.lower() != 'none' and not  # Ignore static and special tags
             any(tag in curr_trains[tid].symbol.lower() for tag in IGNORED_TAGS)):
-                if (curr_trains[tid].route != last_trains[tid].route
-                        or curr_trains[tid].track != last_trains[tid].track
-                        or curr_trains[tid].dist != last_trains[tid].dist):
+                if (curr_trains[tid].route_1 != last_trains[tid].route_1
+                        or curr_trains[tid].route_2 != last_trains[tid].route_2
+                        or curr_trains[tid].track_1 != last_trains[tid].track_1
+                        or curr_trains[tid].track_2 != last_trains[tid].track_2
+                        or abs(curr_trains[tid].dist_1 - last_trains[tid].dist_1) > DISTANCE_JITTER
+                        or abs(curr_trains[tid].dist_2 - last_trains[tid].dist_2) > DISTANCE_JITTER):
                     # train HAS MOVED since last update
                     if curr_trains[tid].engineer.lower() == 'ai':
                         nbr_ai_moving += 1
@@ -685,9 +691,12 @@ async def scan_world_state():
                         await strike_alert_msgs(CH_ALERT, tid, msg)
                         await asyncio.sleep(.5)
                         del watched_trains[tid]  # No longer need to watch
-                elif (curr_trains[tid].route == last_trains[tid].route
-                      and curr_trains[tid].track == last_trains[tid].track
-                      and curr_trains[tid].dist == last_trains[tid].dist):
+                elif (curr_trains[tid].route_1 == last_trains[tid].route_1
+                      and curr_trains[tid].route_2 == last_trains[tid].route_2
+                      and curr_trains[tid].track_1 == last_trains[tid].track_1
+                      and curr_trains[tid].track_2 == last_trains[tid].track_2
+                      and abs(curr_trains[tid].dist_1 - last_trains[tid].dist_1) < DISTANCE_JITTER
+                      and abs(curr_trains[tid].dist_2 - last_trains[tid].dist_2) < DISTANCE_JITTER):
                     # train HAS NOT MOVED since last update
                     if curr_trains[tid].engineer.lower() == 'ai':
                         nbr_ai_stopped += 1
@@ -703,7 +712,7 @@ async def scan_world_state():
                             alert_msg = f' {RED_SQUARE} {last_world_datetime} **POSSIBLE STUCK TRAIN**: '
                             alert_msg += (f' [{curr_trains[tid].engineer}] {curr_trains[tid].symbol} ({tid})'
                                           f' has not moved for {td}, '
-                                          f'DLC {location(curr_trains[tid].route, curr_trains[tid].track)}.')
+                                          f'DLC {location(curr_trains[tid].route_1, curr_trains[tid].track_1)}.')
                             alert_messages[tid].append(await send_ch_msg(CH_ALERT, alert_msg))
                             await asyncio.sleep(.5)
                             if curr_trains[tid].engineer.lower() != 'ai':
@@ -720,7 +729,7 @@ async def scan_world_state():
                                          f' **STUCK TRAIN REMINDER # {watched_trains[tid][1] - 1}**: ')
                             alert_msg += (f'[{curr_trains[tid].engineer}] {curr_trains[tid].symbol} ({tid})'
                                           f' has not moved for {td}, '
-                                          f'DLC {location(curr_trains[tid].route, curr_trains[tid].track)}.')
+                                          f'DLC {location(curr_trains[tid].route_1, curr_trains[tid].track_1)}.')
                             alert_messages[tid].append(await send_ch_msg(CH_ALERT, alert_msg))
                             await asyncio.sleep(.5)
                             if curr_trains[tid].engineer.lower() != 'ai':
@@ -733,7 +742,7 @@ async def scan_world_state():
                         else:
                             pass  # We have already notified at least once, now backing off before another notice
                     print(f'[{curr_trains[tid].engineer}] {curr_trains[tid].symbol} ({tid}) has not moved for {td}, '
-                          f'DLC {location(curr_trains[tid].route, curr_trains[tid].track)}')
+                          f'DLC {location(curr_trains[tid].route_1, curr_trains[tid].track_1)}')
                     curr_trains[tid].last_time_moved = last_trains[tid].last_time_moved
                     curr_trains[tid].job_thread = last_trains[tid].job_thread
                 else:
