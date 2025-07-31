@@ -2,34 +2,90 @@ import configparser
 
 CONFIG_FILE = 'r8gpt.cfg'
 
+
 class Car:
-    def __init__(self, filename, unit_type, route, track, node, dist, reverse, weight,
-                 dest_tag, unit_number, hazmat_tag):
-        self.filename = filename
-        self.unit_type = unit_type
-        self.route = route
-        self.track = track
-        self.node = node
-        self.dist = dist
-        self.reverse = reverse
-        self.weight = weight
-        self.dest_tag = dest_tag
-        self.unit_number = unit_number
-        self.hazmat_tag = hazmat_tag
+    __slots__ = ('filename', 'unit_type', 'route_1', 'route_2', 'track_1', 'track_2', 'node_1', 'node_2',
+                 'dist_1', 'dist_2', 'reverse_1', 'reverse_2', 'weight', 'dest_tag', 'unit_number', 'hazmat_index')
+
+    def __init__(self,
+                 filename: str,
+                 unit_type: str,
+                 route_1: int,
+                 route_2: int,
+                 track_1: int,
+                 track_2: int,
+                 node_1: int,
+                 node_2: int,
+                 dist_1: float,
+                 dist_2: float,
+                 reverse_1: bool,
+                 reverse_2: bool,
+                 weight: float,
+                 dest_tag: str,
+                 unit_number: int,
+                 hazmat_index: int
+                 ):
+
+        self.filename = str(filename)
+        self.unit_type = str(unit_type)
+        self.route_1 = int(route_1)
+        if route_2:
+            self.route_2 = int(route_2)
+        else:
+            self.route_2 = route_2
+        self.track_1 = int(track_1)
+        if track_2:
+            self.track_2 = int(track_2)
+        else:
+            self.track_2 = track_2
+        self.node_1 = int(node_1)
+        if node_2:
+            self.node_2 = int(node_2)
+        else:
+            self.node_2 = node_2
+        self.dist_1 = float(dist_1)
+        if dist_2:
+            self.dist_2 = float(dist_2)
+        else:
+            self.dist_2 = dist_2
+        self.reverse_1 = bool(reverse_1)
+        if reverse_2:
+            self.reverse_2 = bool(reverse_2)
+        else:
+            self.reverse_2 = reverse_2
+        self.weight = float(weight)
+        self.dest_tag = str(dest_tag)
+        self.unit_number = int(unit_number)
+        self.hazmat_index = int(hazmat_index)
 
     def __str__(self):
-        return str(f'fname: {self.filename}, type: {self.unit_type}, route: {self.route}, track: {self.track}, '
-                   f'node: {self.node}, dist: {self.dist}, reverse: {self.reverse}, weight: {self.weight}, '
-                   f'dest_tag: {self.dest_tag}, unit_number: {self.unit_number}, hazmat: {self.hazmat_tag}')
+        return str(f'fname: {self.filename}, type: {self.unit_type}, route: ({self.route_1}, {self.route_2}), '
+                   f'track: ({self.track_1}, {self.track_2}), node: ({self.node_1}, {self.node_2}), '
+                   f'dist: ({self.dist_1}, {self.dist_2}), reverse: ({self.reverse_1}, {self.reverse_2}), ' 
+                   f'weight: {self.weight}, dest_tag: {self.dest_tag}, unit_number: {self.unit_number}, '
+                   f'hazmat: {self.hazmat_index}')
 
 
 class Cut:
-    def __init__(self, train_id, is_ai, direction, speed_limit, prev_signal, consist):
-        self.train_id = train_id
-        self.is_ai = is_ai
-        self.direction = direction
-        self.speed_limit = speed_limit
-        self.prev_signal = prev_signal
+    __slots__ = ('train_id', 'is_ai', 'direction', 'speed_limit', 'prev_signal', 'consist')
+
+    def __init__(self,
+                 train_id: int,
+                 is_ai: str,
+                 direction: int,
+                 speed_limit: int,
+                 prev_signal: str,
+                 consist: list
+                 ):
+
+        self.train_id = int(train_id)
+        if is_ai.lower() == 'true':
+            self.is_ai = True
+        else:
+            self.is_ai = False
+        self.direction = int(direction)
+        self.speed_limit = int(speed_limit)
+        self.prev_signal = str(prev_signal)
         self.consist = consist
 
     def __str__(self):
@@ -38,26 +94,55 @@ class Cut:
 
 
 class Train:
-    def __init__(self, train_id, symbol, lead_num, train_type, num_units, engineer, consist,
-                 last_time_moved, route, track, dist):
-        self.train_id = train_id  # Unique ID
-        self.symbol = symbol  # Train tag symbol
-        self.lead_num = lead_num  # Lead loco number
-        self.train_type = train_type  # freight, passenger
-        self.num_units = num_units  # Number of locos + cars total
-        self.engineer = engineer  # AI, player name, none
+
+    __slots__ = ('train_id', 'symbol', 'lead_num', 'train_type', 'num_units', 'engineer', 'consist', 'last_time_moved',
+                 'route_1', 'route_2', 'track_1', 'track_2', 'dist_1', 'dist_2', 'discord_id', 'job_thread')
+    def __init__(self,
+                 train_id: int,
+                 symbol: str,
+                 lead_num: int,
+                 train_type: str,
+                 num_units: int,
+                 engineer: str,
+                 consist: list,
+                 last_time_moved,
+                 route_1: int,
+                 route_2: int,
+                 track_1: int,
+                 track_2: int,
+                 dist_1: float,
+                 dist_2: float
+                 ):
+        self.train_id = int(train_id)  # Unique ID
+        self.symbol = str(symbol)  # Train tag symbol
+        self.lead_num = int(lead_num)  # Lead loco number
+        self.train_type = str(train_type)  # freight, passenger
+        self.num_units = int(num_units)  # Number of locos + cars total
+        self.engineer = str(engineer)  # AI, player name, none
         self.consist = consist  # Full consist of train
         self.last_time_moved = last_time_moved  # Last time the train showed as moving
-        self.route = route
-        self.track = track
-        self.dist = dist
+        self.route_1 = int(route_1)
+        if route_2:
+            self.route_2 = int(route_2)
+        else:
+            self.route_2 = route_2
+        self.track_1 = int(track_1)
+        if track_2:
+            self.track_2 = int(track_2)
+        else:
+            self.track_2 = track_2
+        self.dist_1 = float(dist_1)
+        if dist_2:
+            self.dist_2 = float(dist_2)
+        else:
+            self.dist_2 = dist_2
         self.discord_id = ''  # Unique discord ID of player crewing this train
         self.job_thread = ''  # Keep track of thread where this train is being monitored
 
     def __str__(self):
         return str(f'ID: {self.train_id}\nSymbol: {self.symbol}\nLead#: {self.lead_num}\nType: {self.train_type}\n'
-                   f'Number of cars:{self.num_units}\nEngineer: {self.engineer}\nRoute: {self.route}\n'
-                   f'Track: {self.track}\nDist: {self.dist}\nLast Update: {self.last_time_moved}\n'
+                   f'Number of cars:{self.num_units}\nEngineer: {self.engineer}\nRoute: {self.route_1}\n'
+                   f'Track: {self.track_1}\nDist: {self.dist_1}, {self.dist_2}\nLast Update: {self.last_time_moved}\n'
                    f'Discord id: {self.discord_id}\nJob thread: {self.job_thread}')
 
 
