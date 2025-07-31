@@ -20,6 +20,7 @@ intents.guilds = True  # noqa
 intents.messages = True  # noqa
 intents.message_content = True  # noqa
 
+VERSION = '31Jul25'
 SAVENAME = WORLDSAVE_PATH + '/Auto Save World.xml'
 DIESEL_ENGINE = 'US_DieselEngine'
 DISCORD_CHAR_LIMIT = 2000
@@ -114,7 +115,8 @@ def update_world_state(world_trains):
             dist_2 = cut.consist[0].dist_2
             if tag in symbol_list:
                 if tag != 'None':
-                    print(f'Duplicate symbol: [{tag}] found while parsing world save')
+                    pass
+                    #print(f'Duplicate symbol: [{tag}] found while parsing world save')
             else:
                 symbol_list.append(tag)
             if 'amtrak' in cut.consist[0].filename.lower():
@@ -538,6 +540,27 @@ async def train_info(ctx: discord.ApplicationContext, tid: int):
     await ctx.respond(msg, ephemeral=True)
 
 
+@bot.slash_command(name='consist_info', description="Display symbols of all cars in train")
+@option('tid', required=True, description='Train ID')
+async def consist_info(ctx: discord.ApplicationContext, tid: int):
+    if tid in curr_trains:
+        msg = '`'
+        count = 1
+        for car in curr_trains[tid].consist:
+            msg += f'{count} : {car.dest_tag} | {car.filename.split(".")[0]}\n'
+            count += 1
+        msg += '`'
+    else:
+        msg = f'Train {tid} not found.'
+    if len(msg) > DISCORD_CHAR_LIMIT:
+        tf = open(TMP_FILENAME, 'w')
+        tf.write(msg)
+        tf.close()
+        await ctx.response.send_message(file=discord.File(TMP_FILENAME), ephemeral=True)
+    else:
+        await ctx.respond(msg, ephemeral=True)
+
+
 @bot.slash_command(name="check_symbol", description="Check for existence of a train symbol")
 @option('symbol', description='symbol', required=True)
 async def check_symbol(ctx: discord.ApplicationContext, symbol: str):
@@ -561,7 +584,7 @@ async def scan_world_state():
     if len(curr_trains) == 0:  # No trains means we need to read initial state
         last_worldsave_modified_time = os.stat(SAVENAME).st_mtime  # Time
         last_world_datetime = update_world_state(curr_trains)
-        msg = (f'{last_world_datetime} **--> INITIALIZING NEW WORLD STATE <--** '
+        msg = (f'{last_world_datetime} **--> r8gpt ({VERSION}) INITIALIZING NEW WORLD STATE <--** '
                f'Total number of trains: {train_count("all", curr_trains, watched_trains)} '
                f'(AI trains: {train_count("ai", curr_trains, watched_trains)},'
                f' player trains: {train_count("player", curr_trains, watched_trains)}) ')
@@ -588,7 +611,7 @@ async def scan_world_state():
                               last_world_datetime)
         player_updates.clear()
         watched_trains.clear()
-        msg = (f'{last_world_datetime} **--> INITIALIZING NEW WORLD STATE <--** '
+        msg = (f'{last_world_datetime} **--> r8gpt ({VERSION}) INITIALIZING NEW WORLD STATE <--** '
                f'Total number of trains: {train_count("all", curr_trains, watched_trains)} '
                f'(AI trains: {train_count("ai", curr_trains, watched_trains)},'
                f' player trains: {train_count("player", curr_trains, watched_trains)}) ')
@@ -631,22 +654,27 @@ async def scan_world_state():
             for tid in curr_trains:
                 if players[pid].train_symbol.lower() == curr_trains[tid].symbol.lower():
                     if players[pid].train_id != curr_trains[tid].train_id:
-                        print(f'Player {players[pid].discord_name} train [{players[pid].train_symbol} has changed ID '
-                              f'from {players[pid].train_id} to {curr_trains[tid].train_id}. Updating player record.')
+                        msg = f'Player {players[pid].discord_name} train [{players[pid].train_symbol} has changed ID '
+                        msg += f'from {players[pid].train_id} to {curr_trains[tid].train_id}. Updating player record.'
                         players[pid].train_id = curr_trains[tid].train_id
+                        await send_ch_msg(CH_LOG, msg)
+                        await asyncio.sleep(.5)
                     curr_trains[tid].discord_id = players[pid].discord_id
                     curr_trains[tid].engineer = players[pid].discord_name
                     curr_trains[tid].job_thread = players[pid].job_thread
                 else:
                     for car in curr_trains[tid].consist:
                         if players[pid].train_symbol.lower() == car.dest_tag.lower():
-                            print(f'Found player train {players[pid].discord_name} : {players[pid].train_symbol}'
-                                  f' but not on lead loco - perhaps they have switched leaders')
-                            if players[pid].train_id != curr_trains[tid].train_id:
-                                print(
-                                    f'Player {players[pid].discord_name} train [{players[pid].train_symbol}'
-                                    f' has changed ID from {players[pid].train_id} to {curr_trains[tid].train_id}.')
+                            msg = f'Found player train {players[pid].discord_name} : {players[pid].train_symbol}'
+                            msg += f' but not on lead loco - perhaps they have switched leaders(?)'
+                            await send_ch_msg(CH_LOG, msg)
+                            await asyncio.sleep(.5)
+                            if players[pid].train_id != curr_trains[tid].train_id:  # Verify this action #
+                                msg = f'Changing ID of {players[pid].discord_name} train [{players[pid].train_symbol}'
+                                msg += f' from {players[pid].train_id} to {curr_trains[tid].train_id}.'
                                 players[pid].train_id = curr_trains[tid].train_id
+                                await send_ch_msg(CH_LOG, msg)
+                                await asyncio.sleep(.5)
                             curr_trains[tid].discord_id = players[pid].discord_id
                             curr_trains[tid].engineer = players[pid].discord_name
                             curr_trains[tid].job_thread = players[pid].job_thread
@@ -762,7 +790,7 @@ async def on_ready():
     global fp
     global event_db
 
-    print(f"[{datetime.now()}] {bot.user} starting")
+    print(f"[{datetime.now()}] {bot.user} starting r8gpt v{VERSION}")
     fp = open(LOG_FILENAME, 'w')  # file pointer to log file
     event_db = r8gptDB.load_db(DB_FILENAME)
     scan_world_state.start()
