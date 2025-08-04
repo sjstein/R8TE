@@ -20,7 +20,7 @@ intents.guilds = True  # noqa
 intents.messages = True  # noqa
 intents.message_content = True  # noqa
 
-VERSION = '31Jul25'
+VERSION = '04Aug25'
 SAVENAME = WORLDSAVE_PATH + '/Auto Save World.xml'
 DIESEL_ENGINE = 'US_DieselEngine'
 DISCORD_CHAR_LIMIT = 2000
@@ -578,11 +578,11 @@ async def check_symbol(ctx: discord.ApplicationContext, symbol: str):
 async def scan_world_state():
     global fp
     global last_world_datetime
-    global last_worldsave_modified_time  # designated global to keep track between calls
+    global last_worlds_save_modified_time  # designated global to keep track between calls
 
     # Check for initial startup
     if len(curr_trains) == 0:  # No trains means we need to read initial state
-        last_worldsave_modified_time = os.stat(SAVENAME).st_mtime  # Time
+        last_worlds_save_modified_time = os.stat(SAVENAME).st_mtime  # Time
         last_world_datetime = update_world_state(curr_trains)
         msg = (f'{last_world_datetime} **--> r8gpt ({VERSION}) INITIALIZING NEW WORLD STATE <--** '
                f'Total number of trains: {train_count("all", curr_trains, watched_trains)} '
@@ -593,22 +593,57 @@ async def scan_world_state():
         await strike_alert_msgs(CH_ALERT)  # Get rid of any chaff from previous alerts
 
     # Check for server reboot
-    elif (os.stat(SAVENAME).st_mtime - last_worldsave_modified_time) > REBOOT_TIME:
-        await send_ch_msg(CH_LOG, '**Apparent server reboot** : Re-syncing train states')
+    elif (os.stat(SAVENAME).st_mtime - last_worlds_save_modified_time) > REBOOT_TIME:
+        msg = '**Apparent server reboot** : Re-syncing train states'
         # Look for and archive player trains and capture existing player records
         player_updates = list()
         for player in players:
-            tid = find_tid(players[player].train_symbol, curr_trains)
             player_updates.append([players[player].discord_id, players[player].discord_name,
-                                   players[player].train_symbol, players[player].job_thread])
+                                   players[player].train_symbol, players[player].train_id, players[player].job_thread])
+        msg += f'\nFound {len(player_updates)} players crewing trains - repopulating their info:'
+        for player in player_updates:
+            msg += f'\n{player[1]} : {player[2]} [{player[3]}]'
+        print(msg)
+        await send_ch_msg(CH_LOG, msg)
+        await asyncio.sleep(.5)
         players.clear()
         # Repopulate trains
-        last_worldsave_modified_time = os.stat(SAVENAME).st_mtime  # Time
+        last_worlds_save_modified_time = os.stat(SAVENAME).st_mtime  # Time
         last_world_datetime = update_world_state(curr_trains)
         # Re-add players
         for player in player_updates:
-            player_crew_train(curr_trains, find_tid(player[2], curr_trains), player[0], player[1], player[3],
-                              last_world_datetime)
+            tid = find_tid(player[2], curr_trains)
+            if tid < 0:     # Current train symbol is not found; perhaps lead loco is 'backwards' or train was removed
+                if player[3] in curr_trains:
+                    tid = player[3]
+                    msg = (f'Invalid player {player[1]} train id returned for find_tid({player[2]}) '
+                           f'so resorting to archived tid of {player[3]}')
+                else:
+                    tid = -1    # Can't find this train, so prevent from trying to crew it
+                    msg = (f'Train {player[2]}[{player[3]}] not found;'
+                           f' removing crew status for player {player[1]}')
+                    # Send message in job thread notifying player of the problem
+                    player_msg = (f'{player[0]}, during a server reboot your job status for {player[2]} was lost.'
+                                  f' Please notify staff (former TID = {player[3]}).')
+                    forum_thread = await bot.fetch_channel(player[4])
+                    await send_ch_msg(forum_thread, player_msg)
+                    await asyncio.sleep(.5)
+                    if player[3] in watched_trains:
+                        # This train has a watch on it - time to remove, and strike-thru previous alert messages
+                        # We are a bit redundant here as the server restart handler will strike through all messages,
+                        # but we also want to clear out the watched_trains entry.
+                        remove_msg = (
+                            f' {GREEN_CIRCLE} {last_world_datetime} **SERVER HICCUP**: Train {player[2]}'
+                            f' ({tid}) has been removed after a server restart.')
+                        await strike_alert_msgs(CH_ALERT, player[3], remove_msg)
+                        await asyncio.sleep(.5)
+                        del watched_trains[player[3]]  # No longer need to watch
+                print(msg)
+                await send_ch_msg(CH_LOG, msg)
+                await asyncio.sleep(.5)
+            if tid > 0:
+                player_crew_train(curr_trains, tid, player[0], player[1], player[4],
+                                  last_world_datetime)
         player_updates.clear()
         watched_trains.clear()
         msg = (f'{last_world_datetime} **--> r8gpt ({VERSION}) INITIALIZING NEW WORLD STATE <--** '
@@ -617,15 +652,16 @@ async def scan_world_state():
                f' player trains: {train_count("player", curr_trains, watched_trains)}) ')
         print(msg)
         await send_ch_msg(CH_LOG, msg)
+        await asyncio.sleep(.5)
         await strike_alert_msgs(CH_ALERT)  # Get rid of any chaff from previous alerts
 
     #
     # Begin scanning world saves
     #
     # Check time stamp on world save file for an updated version
-    if os.stat(SAVENAME).st_mtime != last_worldsave_modified_time:
+    if os.stat(SAVENAME).st_mtime != last_worlds_save_modified_time:
         # Updated world save found
-        last_worldsave_modified_time = os.stat(SAVENAME).st_mtime
+        last_worlds_save_modified_time = os.stat(SAVENAME).st_mtime
         last_trains = curr_trains.copy()  # Archive our current set of trains for comparison
         last_world_datetime = update_world_state(curr_trains)  # Update the trains dictionary
 
