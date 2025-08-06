@@ -5,11 +5,13 @@ from discord.ext import tasks  # noqa This libray is covered in py-cord
 from discord import option  # noqa This libray is covered in py-cord
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta
+import glob
 import os
-from r8gptInclude import (WORLDSAVE_PATH, DB_FILENAME, LOG_FILENAME, AI_ALERT_TIME, PLAYER_ALERT_TIME, REMINDER_TIME,
-                          BOT_TOKEN, CH_LOG, CH_ALERT, CREWED_TAG, COMPLETED_TAG, AVAILABLE_TAG, LOCATION_DB,
-                          SCAN_TIME, IGNORED_TAGS, REBOOT_TIME, RED_SQUARE, RED_EXCLAMATION, GREEN_CIRCLE, AXE)
-from r8gptInclude import Car, Cut, Train, Player
+from r8gptInclude import (WORLDSAVE_PATH, AEI_PATH, DB_FILENAME, LOG_FILENAME, AI_ALERT_TIME, PLAYER_ALERT_TIME,
+                          REMINDER_TIME, BOT_TOKEN, CH_LOG, CH_ALERT, CH_DETECTOR, CREWED_TAG, COMPLETED_TAG,
+                          AVAILABLE_TAG, LOCATION_DB, SCAN_TIME, IGNORED_TAGS, REBOOT_TIME, RED_SQUARE, RED_EXCLAMATION,
+                          GREEN_CIRCLE, AXE)
+from r8gptInclude import Car, Cut, Train, Player, AeiReport, CarReport
 import r8gptDB
 
 DEBUG = True
@@ -90,10 +92,11 @@ curr_trains = dict()  # Dict of all trains in the world
 watched_trains = dict()  # Dict of trains which are stalled/stuck
 players = dict()  # Dict of player controlled trains
 alert_messages = defaultdict(list)  # Dict of messages sent to alert channel
+detector_reports = defaultdict(list)
+detector_files = list()
+detector_file_time: float = 0.0
 
-global fp  # File pointer to log
 global last_world_datetime
-
 
 def update_world_state(world_trains):
     symbol_list = list()
@@ -175,12 +178,43 @@ def player_crew_train(train_set, tid, discord_id, discord_name, thread, add_time
         return 0
 
 
-def log_msg(msg):
-    global fp
+def parseAEI(timestamp, root):
+    this_report = None
+    for t in root.iter('AEI_Report'):
+        scanner_name = t.find('scannername').text
+        train_symbol = t.find('trainsymbol').text
+        train_speed = t.find('trainspeedmph').text
+        total_axles = t.find('totalaxles').text
+        total_loads = t.find('totalloads').text
+        total_empties = t.find('totalmtys').text
+        total_tons = t.find('totaltons').text
+        total_length = t.find('trainlengthft').text
+        units = list()
+        unitLoader = t.find('reportdata')
+        for rail_vehicle in unitLoader.iter('AEI_Report_UnitData'):
+            unit_type = rail_vehicle.find('equipmentype').text
+            direction = rail_vehicle.find('direction').text
+            sequence =rail_vehicle.find('sequence').text
+            roadname = rail_vehicle.find('roadname').text
+            unitnumber = rail_vehicle.find('unitnumber').text
+            isloaded = rail_vehicle.find('isloaded').text
+            cargotons = rail_vehicle.find('cargotons').text
+            hazmat = rail_vehicle.find('hazmatPlacardIndex').text
+            dest_tag = rail_vehicle.find('destinationtag').text
+            defect = rail_vehicle.find('cardefect').text
+            file_name = rail_vehicle.find('carfilename').text
+            units.append(
+                CarReport(unit_type, direction, sequence, roadname, unitnumber, isloaded, cargotons, hazmat, dest_tag,
+                          defect, file_name))
+        this_report = AeiReport(scanner_name, timestamp, train_symbol, train_speed, total_axles, total_loads,
+                                total_empties,total_tons, total_length, units)
 
-    fp = open(LOG_FILENAME, 'a')
-    fp.write(msg + '\n')
-    fp.close()
+    return this_report
+
+
+def log_msg(msg):
+    with open(LOG_FILENAME, 'a') as fp:
+        fp.write(msg + '\n')
 
 
 bot = discord.Bot(intents=intents)
@@ -576,7 +610,6 @@ async def check_symbol(ctx: discord.ApplicationContext, symbol: str):
 
 @tasks.loop(seconds=SCAN_TIME)
 async def scan_world_state():
-    global fp
     global last_world_datetime
     global last_worlds_save_modified_time  # designated global to keep track between calls
 
@@ -821,15 +854,56 @@ async def scan_world_state():
         print(msg)
 
 
+
+@tasks.loop(seconds=10)
+async def scan_detectors():
+    global detector_files
+    global detector_file_time
+
+    detector_files = glob.glob(os.path.join(AEI_PATH, "*"))
+    for file in detector_files:
+        # Grab timestamp of file save (only way to get any kind of timing)
+        src_mtime = os.path.getmtime(file)
+        if src_mtime > detector_file_time:
+            detector_file_time = src_mtime
+            formatted_time = datetime.fromtimestamp(src_mtime).strftime('%Y-%m-%d %H:%M:%S')
+            tree = ET.parse(file)
+            root = tree.getroot()
+            report = parseAEI(formatted_time, root)
+            detector_reports[report.name].append(report)
+            defects = list()
+            for unit in report.units:
+                if unit.defect.lower() != 'all_ok':
+                    defects.append([unit.sequence, unit.defect])
+            if len(defects) > 0:
+                defect_msg = ''
+                for defect in defects:
+                    defect_msg += f'{defect[1]} : {defect[0]}'
+            else:
+                defect_msg = 'None'
+            msg = (f'[{report.timestamp}] {report.name} : {report.symbol} | {report.speed} mph |'
+                   f' {report.axles} axles | Defects: {defect_msg}')
+            for pid in players:
+                if players[pid].train_symbol.lower() in report.symbol.lower():
+                    # Send report to job thread
+                    forum_thread = await bot.fetch_channel(players[pid].job_thread)
+                    await send_ch_msg(forum_thread, msg)
+                    await asyncio.sleep(.5)
+            log_msg(msg)
+            await send_ch_msg(CH_DETECTOR, msg)
+            await asyncio.sleep(.5)
+
+
 @bot.event
 async def on_ready():
-    global fp
     global event_db
 
     print(f"[{datetime.now()}] {bot.user} starting r8gpt v{VERSION}")
-    fp = open(LOG_FILENAME, 'w')  # file pointer to log file
+    with open(LOG_FILENAME, 'w') as fp:
+        fp.write('r8gpt log started\n')
     event_db = r8gptDB.load_db(DB_FILENAME)
     scan_world_state.start()
+    scan_detectors.start()
 
 
 bot.run(BOT_TOKEN)

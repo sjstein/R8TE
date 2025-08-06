@@ -159,6 +159,50 @@ class Player:
         return str(f'Discord id: {self.discord_id}\nDiscord name: {self.discord_name}\nJob thread: {self.job_thread}\n'
                    f'Train symbol: {self.train_symbol}\nTrain ID: {self.train_id}\nStart time: {self.start_time}')
 
+class CarReport:
+    def __init__(self, type, dir, seq, road, nbr, loaded, wt, hazmat, tag, defect, filename):
+        self.type = type
+        self.dir = dir
+        self.seq = seq
+        self.road = road
+        self.nbr = nbr
+        self.loaded = loaded
+        self.wt = wt
+        self.hazmat = hazmat
+        self.tag = tag
+        self.defect = defect
+        self.filename = filename
+
+    def __str__(self):
+        msg = (f'{self.type}\n{self.dir}\n{self.seq}\n{self.road}\n{self.nbr}\n{self.loaded}\n{self.wt}\n'
+               f'{self.hazmat}\n{self.tag}\n{self.defect}\n{self.filename}')
+        return msg
+
+class AeiReport:
+    def __init__(self, name, timestamp, symbol, speed, axles, loads, empties, tons, length, units):
+        self.name = name
+        self.timestamp = timestamp
+        self.symbol = symbol
+        self.speed = int(speed)
+        self.axles = int(axles)
+        self.loads = int(loads)
+        self.empties = int(empties)
+        self.tons = int(tons)
+        self.length = int(length)
+        self.units = units
+
+    def __str__(self):
+        msg = (f'Detector : {self.name}\nTime: {self.timestamp}\nTrain ID : {self.symbol}\nSpeed : {self.speed}\n'
+               f'Total Axles : {self.axles}\nWeight (tons): {self.tons}\nLength (feet) : {self.length}\nDefects :')
+        no_defect = True
+        for unit in self.units:
+            if unit.defect.lower() != 'all_ok':
+                no_defect = False
+                msg += f'{unit.seq} : {unit.defect}\n'
+            # msg += f'{unit}\n----\n'
+        if no_defect:
+            msg += 'None\n'
+        return msg
 
 config = configparser.ConfigParser()
 if len(config.read(CONFIG_FILE)) == 0:
@@ -174,6 +218,7 @@ try:
 
     # run8 specific options
     WORLDSAVE_PATH = config['run8']['world_save_path']
+    AEI_PATH = config['run8']['aei_path']
 
     # r8gpt options
     SCAN_TIME = int(config['r8gpt']['scan_time'])
@@ -189,6 +234,7 @@ try:
     if CH_LOG.lower() == 'none':
         CH_LOG = 'none'
     CH_ALERT = config['discord']['ch_alert']
+    CH_DETECTOR = config['discord']['ch_detector']
     CREWED_TAG = config['discord']['crewed_tag']
     AVAILABLE_TAG = config['discord']['available_tag']
     COMPLETED_TAG = config['discord']['completed_tag']
