@@ -227,6 +227,11 @@ try:
     REMINDER_TIME = int(config['r8gpt']['reminder_time'])
     IGNORED_TAGS = [tag.strip().lower() for tag in config['r8gpt']['ignored_tags'].split(',')]
     REBOOT_TIME = int(config['r8gpt']['reboot_time'])
+    temp = config['r8gpt']['track_ai_detectors']
+    if temp.lower() == 'true':
+        TRACK_AI_DD = True
+    else:
+        TRACK_AI_DD = False
 
     # Discord options
     BOT_TOKEN = config['discord']['bot_token']

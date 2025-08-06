@@ -10,7 +10,7 @@ import os
 from r8gptInclude import (WORLDSAVE_PATH, AEI_PATH, DB_FILENAME, LOG_FILENAME, AI_ALERT_TIME, PLAYER_ALERT_TIME,
                           REMINDER_TIME, BOT_TOKEN, CH_LOG, CH_ALERT, CH_DETECTOR, CREWED_TAG, COMPLETED_TAG,
                           AVAILABLE_TAG, LOCATION_DB, SCAN_TIME, IGNORED_TAGS, REBOOT_TIME, RED_SQUARE, RED_EXCLAMATION,
-                          GREEN_CIRCLE, AXE)
+                          GREEN_CIRCLE, AXE, TRACK_AI_DD)
 from r8gptInclude import Car, Cut, Train, Player, AeiReport, CarReport
 import r8gptDB
 
@@ -855,7 +855,7 @@ async def scan_world_state():
 
 
 
-@tasks.loop(seconds=10)
+@tasks.loop(seconds=SCAN_TIME)
 async def scan_detectors():
     global detector_files
     global detector_file_time
@@ -865,6 +865,7 @@ async def scan_detectors():
         # Grab timestamp of file save (only way to get any kind of timing)
         src_mtime = os.path.getmtime(file)
         if src_mtime > detector_file_time:
+            player_found = False
             detector_file_time = src_mtime
             formatted_time = datetime.fromtimestamp(src_mtime).strftime('%Y-%m-%d %H:%M:%S')
             tree = ET.parse(file)
@@ -885,13 +886,15 @@ async def scan_detectors():
                    f' {report.axles} axles | Defects: {defect_msg}')
             for pid in players:
                 if players[pid].train_symbol.lower() in report.symbol.lower():
+                    player_found = True
                     # Send report to job thread
                     forum_thread = await bot.fetch_channel(players[pid].job_thread)
                     await send_ch_msg(forum_thread, msg)
                     await asyncio.sleep(.5)
             log_msg(msg)
-            await send_ch_msg(CH_DETECTOR, msg)
-            await asyncio.sleep(.5)
+            if not player_found and TRACK_AI_DD:
+                await send_ch_msg(CH_DETECTOR, msg)
+                await asyncio.sleep(.5)
 
 
 @bot.event
