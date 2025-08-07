@@ -892,7 +892,7 @@ async def scan_detectors():
                     await send_ch_msg(forum_thread, msg)
                     await asyncio.sleep(.5)
             log_msg(msg)
-            if not player_found and TRACK_AI_DD:
+            if player_found or TRACK_AI_DD:
                 await send_ch_msg(CH_DETECTOR, msg)
                 await asyncio.sleep(.5)
 
