@@ -175,7 +175,6 @@ def player_crew_train(train_set, tid, discord_id, discord_name, thread, add_time
         train_set[tid].discord_id = discord_id
         train_set[tid].job_thread = thread
         train_set[tid].last_time_moved = add_time
-        print(f'player_crew_train called:\n\nPlayer info:\n{players[discord_id]}\n\nTrain info:\n{train_set[tid]}')
         return 0
 
 
@@ -888,7 +887,7 @@ def run_discord_bot():
                     defect_msg += f'{defect[1]} @ seq {defect[0]}'
             else:
                 defect_msg = 'None'
-            msg = (f'[{report.timestamp}] {report.name} : {report.symbol} | {report.speed} mph |'
+            msg = (f'DET RPT // {report.name} [{report.timestamp}] // {report.symbol} | {report.speed} mph |'
                    f' {report.axles} axles | Defects: {defect_msg}')
             for player in players.values():
                 if player.train_symbol.lower() in report.symbol.lower():
