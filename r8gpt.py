@@ -854,49 +854,54 @@ async def scan_world_state():
         print(msg)
 
 
-
-@tasks.loop(seconds=SCAN_TIME)
+@tasks.loop(seconds=SCAN_TIME*1.5)
 async def scan_detectors():
     global detector_files
     global detector_file_time
+    updated_files = list()
+    updated_file_time = 0
 
-    update_detector_time = detector_file_time
-    detector_files = glob.glob(os.path.join(AEI_PATH, "*.xml"))
+    detector_files = glob.glob(os.path.join(AEI_PATH, "*.xml"))     # List is alphabetical
     for file in detector_files:
-        # Grab timestamp of file save (only way to get any kind of timing)
         this_file_time = os.path.getmtime(file)
         if this_file_time > detector_file_time:
-            player_found = False
-            update_detector_time = max(this_file_time, detector_file_time)
-            formatted_time = datetime.fromtimestamp(this_file_time).strftime('%Y-%m-%d %H:%M:%S')
-            tree = ET.parse(file)
-            root = tree.getroot()
-            report = parseAEI(formatted_time, root)
-            detector_reports[report.name].append(report)
-            defects = list()
-            for unit in report.units:
-                if unit.defect.lower() != 'all_ok':
-                    defects.append([unit.sequence, unit.defect])
-            if len(defects) > 0:
-                defect_msg = ''
-                for defect in defects:
-                    defect_msg += f'{defect[1]} : {defect[0]}'
-            else:
-                defect_msg = 'None'
-            msg = (f'[{report.timestamp}] {report.name} : {report.symbol} | {report.speed} mph |'
-                   f' {report.axles} axles | Defects: {defect_msg}')
-            for player in players.values():
-                if player.train_symbol.lower() in report.symbol.lower():
-                    player_found = True
-                    # Send report to job thread
-                    forum_thread = await bot.fetch_channel(player.job_thread)
-                    await send_ch_msg(forum_thread, msg, log = False)
-                    await asyncio.sleep(.5)
-            if player_found or TRACK_AI_DD:
-                await send_ch_msg(CH_DETECTOR, msg)
+            updated_files.append(file)
+            updated_file_time = max(updated_file_time, this_file_time)
+    for file in updated_files:
+        # Grab timestamp of file save (only way to get any kind of timing)
+        timestamp = os.path.getmtime(file)
+        player_found = False
+        formatted_time = datetime.fromtimestamp(timestamp).strftime('%Y-%m-%d %H:%M:%S')
+        tree = ET.parse(file)
+        root = tree.getroot()
+        report = parseAEI(formatted_time, root)
+        detector_reports[report.name].append(report)
+        defects = list()
+        for unit in report.units:
+            if unit.defect.lower() != 'all_ok':
+                defects.append([unit.seq, unit.defect])
+        if len(defects) > 0:
+            defect_msg = ''
+            for defect in defects:
+                defect_msg += f'{defect[1]} @ seq {defect[0]}'
+        else:
+            defect_msg = 'None'
+        msg = (f'[{report.timestamp}] {report.name} : {report.symbol} | {report.speed} mph |'
+               f' {report.axles} axles | Defects: {defect_msg}')
+        for player in players.values():
+            if player.train_symbol.lower() in report.symbol.lower():
+                player_found = True
+                # Send report to job thread
+                forum_thread = await bot.fetch_channel(player.job_thread)
+                await send_ch_msg(forum_thread, msg, log=False)
                 await asyncio.sleep(.5)
-    detector_file_time = max(update_detector_time, detector_file_time)
-
+        if player_found or TRACK_AI_DD:
+            await send_ch_msg(CH_DETECTOR, msg)
+            await asyncio.sleep(.5)
+        else:
+            log_msg(msg)    # Go ahead and write AI DD messages to log
+    if len(updated_files) > 0:
+        detector_file_time = updated_file_time
 
 @bot.event
 async def on_ready():
