@@ -204,6 +204,7 @@ class AeiReport:
             msg += 'None\n'
         return msg
 
+
 config = configparser.ConfigParser()
 if len(config.read(CONFIG_FILE)) == 0:
     print(f'Error in loading configuration file "{CONFIG_FILE}" - does it exist? Is it empty?')
