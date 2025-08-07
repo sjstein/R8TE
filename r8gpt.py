@@ -22,7 +22,7 @@ intents.guilds = True  # noqa
 intents.messages = True  # noqa
 intents.message_content = True  # noqa
 
-VERSION = '06Aug25'
+VERSION = '06Aug25-b'
 SAVENAME = WORLDSAVE_PATH + '/Auto Save World.xml'
 DIESEL_ENGINE = 'US_DieselEngine'
 DISCORD_CHAR_LIMIT = 2000
@@ -220,11 +220,12 @@ def log_msg(msg):
 bot = discord.Bot(intents=intents)
 
 
-async def send_ch_msg(ch_name, ch_msg):
+async def send_ch_msg(ch_name, ch_msg, log=True):
     """
     Send messages to discord channel
     :param ch_name: name of discord channel to write message to
     :param ch_msg: Message content
+    :param log: whether to write messages to log file
     :return: 0 if successful, -1 if error
     """
     if ch_msg.lower() == 'none':
@@ -247,7 +248,8 @@ async def send_ch_msg(ch_name, ch_msg):
                             print(ex_msg)
                             retval = -1
 
-                        log_msg(ch_msg)
+                        if log:
+                            log_msg(ch_msg)
                         return retval
 
                 if channel.name.lower() == ch_name.lower():
@@ -259,7 +261,8 @@ async def send_ch_msg(ch_name, ch_msg):
                         print(ex_msg)
                         retval = -1
 
-                    log_msg(ch_msg)
+                    if log:
+                        log_msg(ch_msg)
                     return retval
         else:
             try:
@@ -270,7 +273,8 @@ async def send_ch_msg(ch_name, ch_msg):
                 print(ex_msg)
                 retval = -1
 
-            log_msg(ch_msg)
+            if log:
+                log_msg(ch_msg)
             return retval
 
     print(f"[Warning] thread / channel {ch_name} not found.")
@@ -283,7 +287,6 @@ async def strike_alert_msgs(target_channel, tid=None, update_message=None):
         if update_message:
             await send_ch_msg(target_channel, update_message)
             await asyncio.sleep(.5)
-            log_msg(update_message)
         for msg in alert_messages[tid]:  # Change previous alerts
             strike_it = False
             if RED_SQUARE in msg.content:
@@ -379,7 +382,6 @@ async def crew(ctx: discord.ApplicationContext, symbol: str):
                     current_tags.remove(tag_to_remove)
                 msg = f'{curr_trains[tid].last_time_moved} {ctx.author.display_name} crewed {curr_trains[tid].symbol}'
                 await thread.edit(applied_tags=current_tags)
-                log_msg(msg)
                 await send_ch_msg(CH_LOG, msg)
                 r8gptDB.add_event(curr_trains[tid].last_time_moved, ctx.author.display_name,
                                   'CREW', symbol, event_db)
@@ -432,7 +434,6 @@ async def tie_down(ctx: discord.ApplicationContext, location: str):
             await thread.send(msg)
             await send_ch_msg(CH_LOG, msg)
             await thread.edit(applied_tags=current_tags)
-            log_msg(msg)
             r8gptDB.add_event(curr_trains[tid].last_time_moved, ctx.author.display_name,
                               'TIED_DOWN', curr_trains[tid].symbol, event_db)
             r8gptDB.save_db(DB_FILENAME, event_db)
@@ -498,7 +499,6 @@ async def complete(ctx: discord.ApplicationContext, symbol: str, notes: str):
                 msg += f'. Notes: {notes}'
             await thread.send(msg)
             await thread.edit(applied_tags=current_tags)
-            log_msg(msg)
             await send_ch_msg(CH_LOG, msg)
             r8gptDB.add_event(curr_trains[tid].last_time_moved, ctx.author.display_name,
                               'MARKED_COMPLETE', curr_trains[tid].symbol, event_db)
@@ -860,14 +860,15 @@ async def scan_detectors():
     global detector_files
     global detector_file_time
 
-    detector_files = glob.glob(os.path.join(AEI_PATH, "*"))
+    update_detector_time = detector_file_time
+    detector_files = glob.glob(os.path.join(AEI_PATH, "*.xml"))
     for file in detector_files:
         # Grab timestamp of file save (only way to get any kind of timing)
-        src_mtime = os.path.getmtime(file)
-        if src_mtime > detector_file_time:
+        this_file_time = os.path.getmtime(file)
+        if this_file_time > detector_file_time:
             player_found = False
-            detector_file_time = src_mtime
-            formatted_time = datetime.fromtimestamp(src_mtime).strftime('%Y-%m-%d %H:%M:%S')
+            update_detector_time = max(this_file_time, detector_file_time)
+            formatted_time = datetime.fromtimestamp(this_file_time).strftime('%Y-%m-%d %H:%M:%S')
             tree = ET.parse(file)
             root = tree.getroot()
             report = parseAEI(formatted_time, root)
@@ -884,17 +885,17 @@ async def scan_detectors():
                 defect_msg = 'None'
             msg = (f'[{report.timestamp}] {report.name} : {report.symbol} | {report.speed} mph |'
                    f' {report.axles} axles | Defects: {defect_msg}')
-            for pid in players:
-                if players[pid].train_symbol.lower() in report.symbol.lower():
+            for player in players.values():
+                if player.train_symbol.lower() in report.symbol.lower():
                     player_found = True
                     # Send report to job thread
-                    forum_thread = await bot.fetch_channel(players[pid].job_thread)
-                    await send_ch_msg(forum_thread, msg)
+                    forum_thread = await bot.fetch_channel(player.job_thread)
+                    await send_ch_msg(forum_thread, msg, log = False)
                     await asyncio.sleep(.5)
-            log_msg(msg)
             if player_found or TRACK_AI_DD:
                 await send_ch_msg(CH_DETECTOR, msg)
                 await asyncio.sleep(.5)
+    detector_file_time = max(update_detector_time, detector_file_time)
 
 
 @bot.event
