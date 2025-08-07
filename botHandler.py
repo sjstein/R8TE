@@ -7,12 +7,12 @@ import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta
 import glob
 import os
-from r8gptInclude import (WORLDSAVE_PATH, AEI_PATH, DB_FILENAME, LOG_FILENAME, AI_ALERT_TIME, PLAYER_ALERT_TIME,
-                          REMINDER_TIME, BOT_TOKEN, CH_LOG, CH_ALERT, CH_DETECTOR, CREWED_TAG, COMPLETED_TAG,
-                          AVAILABLE_TAG, LOCATION_DB, SCAN_TIME, IGNORED_TAGS, REBOOT_TIME, RED_SQUARE, RED_EXCLAMATION,
-                          GREEN_CIRCLE, AXE, TRACK_AI_DD)
-from r8gptInclude import Car, Cut, Train, Player, AeiReport, CarReport
-import r8gptDB
+from r8teInclude import (WORLDSAVE_PATH, AEI_PATH, DB_FILENAME, LOG_FILENAME, AI_ALERT_TIME, PLAYER_ALERT_TIME,
+                         REMINDER_TIME, BOT_TOKEN, CH_LOG, CH_ALERT, CH_DETECTOR, CREWED_TAG, COMPLETED_TAG,
+                         AVAILABLE_TAG, LOCATION_DB, SCAN_TIME, IGNORED_TAGS, REBOOT_TIME, RED_SQUARE, RED_EXCLAMATION,
+                         GREEN_CIRCLE, AXE, TRACK_AI_DD)
+from r8teInclude import Car, Cut, Train, Player, AeiReport, CarReport
+import r8teDB
 
 DEBUG = True
 
@@ -27,7 +27,7 @@ SAVENAME = WORLDSAVE_PATH + '/Auto Save World.xml'
 DIESEL_ENGINE = 'US_DieselEngine'
 DISCORD_CHAR_LIMIT = 2000
 DISTANCE_JITTER = 1.0       # Difference value used to determine if a train is moving
-TMP_FILENAME = 'r8gpt_msg.txt'
+TMP_FILENAME = 'r8te_msg.txt'
 
 event_db = list()
 
@@ -385,9 +385,9 @@ def run_discord_bot():
                     msg = f'{curr_trains[tid].last_time_moved} {ctx.author.display_name} crewed {curr_trains[tid].symbol}'
                     await thread.edit(applied_tags=current_tags)
                     await send_ch_msg(CH_LOG, msg)
-                    r8gptDB.add_event(curr_trains[tid].last_time_moved, ctx.author.display_name,
+                    r8teDB.add_event(curr_trains[tid].last_time_moved, ctx.author.display_name,
                                       'CREW', symbol, event_db)
-                    r8gptDB.save_db(DB_FILENAME, event_db)
+                    r8teDB.save_db(DB_FILENAME, event_db)
                     await thread.send(msg)
                 else:
                     await ctx.respond(f'**UNABLE TO CREW, Train {symbol} shows '
@@ -436,9 +436,9 @@ def run_discord_bot():
                 await thread.send(msg)
                 await send_ch_msg(CH_LOG, msg)
                 await thread.edit(applied_tags=current_tags)
-                r8gptDB.add_event(curr_trains[tid].last_time_moved, ctx.author.display_name,
+                r8teDB.add_event(curr_trains[tid].last_time_moved, ctx.author.display_name,
                                   'TIED_DOWN', curr_trains[tid].symbol, event_db)
-                r8gptDB.save_db(DB_FILENAME, event_db)
+                r8teDB.save_db(DB_FILENAME, event_db)
                 if tid in watched_trains:
                     # This train has a watch on it - time to remove, and strike-thru previous alert messages
                     msg = (f' {GREEN_CIRCLE} {last_world_datetime} **TIED DOWN**: Train {curr_trains[tid].symbol}'
@@ -502,9 +502,9 @@ def run_discord_bot():
                 await thread.send(msg)
                 await thread.edit(applied_tags=current_tags)
                 await send_ch_msg(CH_LOG, msg)
-                r8gptDB.add_event(curr_trains[tid].last_time_moved, ctx.author.display_name,
+                r8teDB.add_event(curr_trains[tid].last_time_moved, ctx.author.display_name,
                                   'MARKED_COMPLETE', curr_trains[tid].symbol, event_db)
-                r8gptDB.save_db(DB_FILENAME, event_db)
+                r8teDB.save_db(DB_FILENAME, event_db)
                 if tid in watched_trains:
                     # This train has a watch on it - time to remove, and strike-thru previous alert messages
                     msg = (f' {GREEN_CIRCLE} {last_world_datetime} **POWERED DOWN**: Train {curr_trains[tid].symbol}'
@@ -619,7 +619,7 @@ def run_discord_bot():
         if len(curr_trains) == 0:  # No trains means we need to read initial state
             last_worlds_save_modified_time = os.stat(SAVENAME).st_mtime  # Time
             last_world_datetime = update_world_state(curr_trains)
-            msg = (f'{last_world_datetime} **--> r8gpt ({VERSION}) INITIALIZING NEW WORLD STATE <--** '
+            msg = (f'{last_world_datetime} **--> r8te ({VERSION}) INITIALIZING NEW WORLD STATE <--** '
                    f'Total number of trains: {train_count("all", curr_trains, watched_trains)} '
                    f'(AI trains: {train_count("ai", curr_trains, watched_trains)},'
                    f' player trains: {train_count("player", curr_trains, watched_trains)}) ')
@@ -681,7 +681,7 @@ def run_discord_bot():
                                       last_world_datetime)
             player_updates.clear()
             watched_trains.clear()
-            msg = (f'{last_world_datetime} **--> r8gpt ({VERSION}) INITIALIZING NEW WORLD STATE <--** '
+            msg = (f'{last_world_datetime} **--> r8te ({VERSION}) INITIALIZING NEW WORLD STATE <--** '
                    f'Total number of trains: {train_count("all", curr_trains, watched_trains)} '
                    f'(AI trains: {train_count("ai", curr_trains, watched_trains)},'
                    f' player trains: {train_count("player", curr_trains, watched_trains)}) ')
@@ -909,10 +909,10 @@ def run_discord_bot():
     async def on_ready():
         global event_db
 
-        print(f"[{datetime.now()}] {bot.user} starting r8gpt v{VERSION}")
+        print(f"[{datetime.now()}] {bot.user} starting r8te v{VERSION}")
         with open(LOG_FILENAME, 'w') as fp:
-            fp.write('r8gpt log started\n')
-        event_db = r8gptDB.load_db(DB_FILENAME)
+            fp.write('R8TE log started\n')
+        event_db = (r8teDB.load_db(DB_FILENAME))
         scan_world_state.start()
         scan_detectors.start()
 
