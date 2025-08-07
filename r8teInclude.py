@@ -1,6 +1,6 @@
 import configparser
 
-CONFIG_FILE = 'r8gpt.cfg'
+CONFIG_FILE = 'r8te.cfg'
 
 
 class Car:
@@ -135,7 +135,7 @@ class Train:
         if dist_2:
             self.dist_2 = float(dist_2)
         else:
-            self.dist_2 = dist_2
+            self.dist_2 = self.dist_1
         self.discord_id = ''  # Unique discord ID of player crewing this train
         self.job_thread = ''  # Keep track of thread where this train is being monitored
 
@@ -204,6 +204,7 @@ class AeiReport:
             msg += 'None\n'
         return msg
 
+
 config = configparser.ConfigParser()
 if len(config.read(CONFIG_FILE)) == 0:
     print(f'Error in loading configuration file "{CONFIG_FILE}" - does it exist? Is it empty?')
@@ -220,14 +221,14 @@ try:
     WORLDSAVE_PATH = config['run8']['world_save_path']
     AEI_PATH = config['run8']['aei_path']
 
-    # r8gpt options
-    SCAN_TIME = int(config['r8gpt']['scan_time'])
-    AI_ALERT_TIME = int(config['r8gpt']['ai_alert_time'])
-    PLAYER_ALERT_TIME = int(config['r8gpt']['player_alert_time'])
-    REMINDER_TIME = int(config['r8gpt']['reminder_time'])
-    IGNORED_TAGS = [tag.strip().lower() for tag in config['r8gpt']['ignored_tags'].split(',')]
-    REBOOT_TIME = int(config['r8gpt']['reboot_time'])
-    temp = config['r8gpt']['track_ai_detectors']
+    # r8te options
+    SCAN_TIME = int(config['r8te']['scan_time'])
+    AI_ALERT_TIME = int(config['r8te']['ai_alert_time'])
+    PLAYER_ALERT_TIME = int(config['r8te']['player_alert_time'])
+    REMINDER_TIME = int(config['r8te']['reminder_time'])
+    IGNORED_TAGS = [tag.strip().lower() for tag in config['r8te']['ignored_tags'].split(',')]
+    REBOOT_TIME = int(config['r8te']['reboot_time'])
+    temp = config['r8te']['track_ai_detectors']
     if temp.lower() == 'true':
         TRACK_AI_DD = True
     else:
