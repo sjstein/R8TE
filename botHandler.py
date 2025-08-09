@@ -22,7 +22,7 @@ intents.guilds = True  # noqa
 intents.messages = True  # noqa
 intents.message_content = True  # noqa
 
-VERSION = '07Aug25'
+VERSION = '09Aug25'
 SAVENAME = WORLDSAVE_PATH + '/Auto Save World.xml'
 DIESEL_ENGINE = 'US_DieselEngine'
 DISCORD_CHAR_LIMIT = 2000
@@ -878,17 +878,22 @@ def run_discord_bot():
             report = parseAEI(formatted_time, root)
             detector_reports[report.name].append(report)
             defects = list()
+            if find_tid(report.symbol, curr_trains) > 0:
+                engineer = curr_trains[find_tid(report.symbol, curr_trains)].engineer
+            else:
+                engineer = "None"
             for unit in report.units:
                 if unit.defect.lower() != 'all_ok':
                     defects.append([unit.seq, unit.defect])
             if len(defects) > 0:
                 defect_msg = ''
                 for defect in defects:
-                    defect_msg += f'{defect[1]} @ seq {defect[0]}'
+                    defect_msg += f'{defect[1]} @ seq {defect[0]} : '
+                defect_msg = defect_msg[:-3]
             else:
                 defect_msg = 'None'
-            msg = (f'DET RPT // {report.name} [{report.timestamp}] // {report.symbol} | {report.speed} mph |'
-                   f' {report.axles} axles | Defects: {defect_msg}')
+            msg = (f'DET RPT // {report.name} {report.timestamp} // {report.symbol} [{engineer}] '
+                   f'| {report.speed} mph | {report.axles} axles | Defects: {defect_msg}')
             for player in players.values():
                 if player.train_symbol.lower() in report.symbol.lower():
                     player_found = True
