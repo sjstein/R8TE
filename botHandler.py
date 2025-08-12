@@ -22,7 +22,7 @@ intents.guilds = True  # noqa
 intents.messages = True  # noqa
 intents.message_content = True  # noqa
 
-VERSION = '09Aug25'
+VERSION = '11Aug25'
 SAVENAME = WORLDSAVE_PATH + '/Auto Save World.xml'
 DIESEL_ENGINE = 'US_DieselEngine'
 DISCORD_CHAR_LIMIT = 2000
