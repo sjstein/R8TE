@@ -859,6 +859,7 @@ def run_discord_bot():
     async def scan_detectors():
         global detector_files
         global detector_file_time
+        global last_world_datetime      # For reporting using server time
         updated_files = list()
         updated_file_time = 0
 
@@ -870,12 +871,10 @@ def run_discord_bot():
                 updated_file_time = max(updated_file_time, this_file_time)
         for file in updated_files:
             # Grab timestamp of file save (only way to get any kind of timing)
-            timestamp = os.path.getmtime(file)
             player_found = False
-            formatted_time = datetime.fromtimestamp(timestamp).strftime('%Y-%m-%d %H:%M:%S')
             tree = ET.parse(file)
             root = tree.getroot()
-            report = parseAEI(formatted_time, root)
+            report = parseAEI(last_world_datetime, root)
             detector_reports[report.name].append(report)
             defects = list()
             if find_tid(report.symbol, curr_trains) > 0:
@@ -892,7 +891,7 @@ def run_discord_bot():
                 defect_msg = defect_msg[:-3]
             else:
                 defect_msg = 'None'
-            msg = (f'DET RPT // {report.name} {report.timestamp} // {report.symbol} [{engineer}] '
+            msg = (f'[{report.timestamp}] DET RPT // {report.name} // {report.symbol} [{engineer}] '
                    f'| {report.speed} mph | {report.axles} axles | Defects: {defect_msg}')
             for player in players.values():
                 if player.train_symbol.lower() in report.symbol.lower():
