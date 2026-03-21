@@ -1,6 +1,7 @@
 import asyncio
 import threading
 from collections import defaultdict
+import io
 import discord  # noqa This libray is covered in py-cord
 from discord.ext import tasks  # noqa This libray is covered in py-cord
 from discord import option  # noqa This libray is covered in py-cord
@@ -8,6 +9,7 @@ import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta, timezone
 import glob
 import os
+import re
 from typing import Union
 from r8teInclude import (WORLDSAVE_PATH, AEI_PATH, LOG_FILENAME, AI_ALERT_TIME, PLAYER_ALERT_TIME, PLAYER_DB_FILENAME,
                          JOB_DB_FILENAME, REMINDER_TIME, BOT_TOKEN, CH_LOG, CH_ALERT, CH_DETECTOR, CREWED_TAG,
@@ -43,6 +45,8 @@ deleted_player_trains = defaultdict(DeletedTrainWatch)
 working_jobs = dict()
 detector_files = list()
 detector_file_time: float = 0.0
+job_track_thread_keepalive = dict()
+job_post_summary_schedule = dict()
 
 global last_world_datetime
 
@@ -390,6 +394,74 @@ async def send_ch_msg(ch_name, ch_msg, log=True):
     return -1
 
 
+async def send_ch_embed(ch_name, embed_msg, log=False, log_text=None):
+    """
+    Send embed to discord channel or thread.
+    :param ch_name: channel/thread name (str) or channel/thread object
+    :param embed_msg: discord.Embed object
+    :param log: whether to write message text to log file
+    :param log_text: optional plain-text message for log output
+    :return: message object on success, -1 if error
+    """
+    for guild in bot.guilds:
+        if isinstance(ch_name, str):
+            for channel in guild.text_channels + guild.forum_channels:
+                threads = channel.threads
+                for thread in threads:
+                    if thread.name.lower() == ch_name.lower():
+                        try:
+                            retval = await thread.send(embed=embed_msg)
+                        except Exception as e:
+                            ex_msg = f'Exception in send_ch_embed(1): {e}'
+                            print(ex_msg)
+                            retval = -1
+                        if log and log_text:
+                            log_msg(log_text)
+                        return retval
+
+                if channel.name.lower() == ch_name.lower():
+                    try:
+                        retval = await channel.send(embed=embed_msg)
+                    except Exception as e:
+                        ex_msg = f'Exception in send_ch_embed(2): {e}'
+                        print(ex_msg)
+                        retval = -1
+                    if log and log_text:
+                        log_msg(log_text)
+                    return retval
+        else:
+            try:
+                retval = await ch_name.send(embed=embed_msg)
+            except Exception as e:
+                ex_msg = f'Exception in send_ch_embed channel name [{ch_name}] type error: {e}'
+                print(ex_msg)
+                retval = -1
+            if log and log_text:
+                log_msg(log_text)
+            return retval
+
+    print(f"[Warning] thread / channel {ch_name} not found.")
+    return -1
+
+
+async def respond_error_embed(ctx: discord.ApplicationContext, err_msg: str):
+    err_embed = discord.Embed(title='r8TE Error', description=err_msg, color=discord.Color.red())
+    try:
+        if hasattr(ctx, "response") and hasattr(ctx.response, "is_done") and ctx.response.is_done():
+            if hasattr(ctx, "send_followup"):
+                await ctx.send_followup(embed=err_embed, ephemeral=True)
+                return
+            if hasattr(ctx, "followup") and hasattr(ctx.followup, "send"):
+                await ctx.followup.send(embed=err_embed, ephemeral=True)
+                return
+        await ctx.respond(embed=err_embed, ephemeral=True)
+    except Exception:
+        if hasattr(ctx, "send_followup"):
+            await ctx.send_followup(embed=err_embed, ephemeral=True)
+        elif hasattr(ctx, "followup") and hasattr(ctx.followup, "send"):
+            await ctx.followup.send(embed=err_embed, ephemeral=True)
+
+
 async def strike_alert_msgs(target_channel, tid=None, update_message=None):
     # Strike out alert messages for a particular train or the entire channel
     if tid:  # This is a specific set of messages to delete
@@ -479,11 +551,374 @@ def run_discord_bot():
         msg += f'` in channel *{ctx.channel}*   :eyes:'
         await send_ch_msg(CH_LOG, msg)
 
+    def extract_channel_id(channel_ref: str):
+        if not channel_ref:
+            return None
+        start = channel_ref.find('<#')
+        if start < 0:
+            return None
+        start += 2
+        end = channel_ref.find('>', start)
+        if end < 0:
+            return None
+        ch_id = channel_ref[start:end].strip()
+        if ch_id.isdigit():
+            return int(ch_id)
+        return None
+
+    async def get_associated_job_post_thread(ledger_thread: discord.Thread):
+        first_msg = await ledger_thread.history(limit=1, oldest_first=True).flatten()
+        if len(first_msg) < 1:
+            return None
+
+        msg_obj = first_msg[0]
+        channel_id = None
+        if msg_obj.embeds:
+            for embed in msg_obj.embeds:
+                for field in embed.fields:
+                    if field.name and field.name.lower() == 'link' and field.value:
+                        channel_id = extract_channel_id(str(field.value))
+                        if channel_id:
+                            break
+                if not channel_id and embed.description:
+                    channel_id = extract_channel_id(str(embed.description))
+                if channel_id:
+                    break
+
+        if not channel_id and msg_obj.content:
+            channel_id = extract_channel_id(msg_obj.content)
+
+        if not channel_id:
+            return None
+
+        job_post_thread = bot.get_channel(channel_id)
+        if job_post_thread is None:
+            try:
+                job_post_thread = await bot.fetch_channel(channel_id)
+            except Exception:
+                return None
+
+        if not isinstance(job_post_thread, discord.Thread):
+            return None
+
+        if not isinstance(job_post_thread.parent, discord.ForumChannel):
+            return None
+
+        if job_post_thread.parent.name.lower() != JOB_POST_FORUM.lower():
+            return None
+
+        return job_post_thread
+
+    def find_forum_channel_by_name(forum_name: str):
+        for guild in bot.guilds:
+            for channel in guild.channels:
+                if isinstance(channel, discord.ForumChannel) and channel.name == forum_name:
+                    return channel
+        return None
+
+    def iter_active_forum_threads(forum_channel: discord.ForumChannel):
+        for thread in forum_channel.threads:
+            if thread.archived:
+                continue
+            yield thread
+
+    async def get_thread_last_activity(thread: discord.Thread, activity_overrides: dict | None = None):
+        newest_msg_time = None
+        async for msg in thread.history(limit=1):
+            newest_msg_time = msg.created_at
+
+        last_activity = newest_msg_time
+        if activity_overrides is not None and thread.id in activity_overrides:
+            override_time = activity_overrides[thread.id]
+            if last_activity is None or override_time > last_activity:
+                last_activity = override_time
+
+        return last_activity
+
+    def normalize_field_name(name: str):
+        return name.replace('_', '').replace(' ', '').lower().strip()
+
+    def get_embed_field_value(embed_obj, target_name: str):
+        target_norm = normalize_field_name(target_name)
+        for field in embed_obj.fields:
+            if normalize_field_name(field.name) == target_norm:
+                return str(field.value)
+        return None
+
+    def get_employee_and_job(embed_obj, default_job: str | None = None):
+        employee = get_embed_field_value(embed_obj, 'employee')
+        job_name = get_embed_field_value(embed_obj, 'job')
+
+        if not employee or not job_name:
+            combined_field = get_embed_field_value(embed_obj, 'employee|job')
+            if combined_field and '|' in combined_field:
+                split_vals = combined_field.split('|', 1)
+                if not employee:
+                    employee = split_vals[0].strip()
+                if not job_name:
+                    job_name = split_vals[1].strip()
+
+        if not employee:
+            employee = 'Unknown'
+        if not job_name:
+            job_name = default_job
+
+        return employee, job_name
+
+    def parse_mark_available_content(raw_content: str):
+        if not raw_content:
+            return None
+
+        cleaned = raw_content.replace('```', '').strip()
+        if len(cleaned) < 1:
+            return None
+
+        entries = list()
+        for line in cleaned.splitlines():
+            if ':' in line:
+                key, value = line.split(':', 1)
+                key = key.strip()
+                value = value.strip()
+                if key and value:
+                    entries.append(f'{key}: {value}')
+
+        if len(entries) > 0:
+            return ' | '.join(entries)
+
+        return cleaned.splitlines()[0].strip()
+
+    def remove_at_mentions(text: str):
+        if not text:
+            return text
+        # Neutralize mention tokens so summary posts never ping users again.
+        return re.sub(r'@(?=\S)', '', text)
+
+    def merge_previous_summary_text(summary_text: str,
+                                    mark_available_info: str | None,
+                                    chronological_entries: list,
+                                    completion_entry: str | None):
+        if not summary_text:
+            return mark_available_info, completion_entry
+
+        in_chronological = False
+        for raw_line in summary_text.splitlines():
+            line = raw_line.strip()
+            if not line:
+                continue
+
+            if line.startswith('- '):
+                parsed_entry = line[2:].strip()
+                if parsed_entry and parsed_entry not in chronological_entries:
+                    chronological_entries.append(parsed_entry)
+                continue
+
+            lower_line = line.lower()
+            if lower_line.startswith('mark available:'):
+                parsed_value = line.split(':', 1)[1].strip()
+                if not mark_available_info and parsed_value:
+                    mark_available_info = parsed_value
+                mark_entry = f'Mark Available | {parsed_value}'
+                if parsed_value and mark_entry not in chronological_entries:
+                    chronological_entries.append(mark_entry)
+                in_chronological = False
+                continue
+
+            if lower_line == 'chronological:':
+                in_chronological = True
+                continue
+
+            if lower_line.startswith('complete:'):
+                parsed_value = line.split(':', 1)[1].strip()
+                if not completion_entry and parsed_value:
+                    completion_entry = parsed_value
+                if parsed_value and parsed_value not in chronological_entries:
+                    chronological_entries.append(parsed_value)
+                in_chronological = False
+                continue
+
+        return mark_available_info, completion_entry
+
+    async def build_job_post_summary_description(thread: discord.Thread, source_messages: list):
+        mark_available_info = None
+        chronological_entries = list()
+        completion_entry = None
+
+        for msg in source_messages:
+            msg_time = msg.created_at.astimezone(timezone.utc).strftime('%Y-%m-%d %H:%M')
+
+            if msg.author.id == bot.user.id:
+                summary_attachments_loaded = False
+                if msg.content:
+                    if 'Lead loco number' in msg.content and 'Departure location' in msg.content:
+                        parsed_mark_available = parse_mark_available_content(msg.content)
+                        if parsed_mark_available:
+                            if mark_available_info is None:
+                                mark_available_info = parsed_mark_available
+                            chronological_entries.append(
+                                f'{msg_time} | Mark Available | {parsed_mark_available}')
+
+                for embed in msg.embeds:
+                    if embed.footer and embed.footer.text and 'R8TE_SUMMARY' in embed.footer.text:
+                        if embed.description:
+                            mark_available_info, completion_entry = merge_previous_summary_text(
+                                embed.description,
+                                mark_available_info,
+                                chronological_entries,
+                                completion_entry
+                            )
+
+                        if not summary_attachments_loaded and msg.attachments:
+                            for attachment in msg.attachments:
+                                if attachment.filename and attachment.filename.lower() == 'summary.txt':
+                                    try:
+                                        attachment_text = (await attachment.read()).decode('utf-8', errors='replace')
+                                        mark_available_info, completion_entry = merge_previous_summary_text(
+                                            attachment_text,
+                                            mark_available_info,
+                                            chronological_entries,
+                                            completion_entry
+                                        )
+                                    except Exception:
+                                        pass
+                            summary_attachments_loaded = True
+                        continue
+
+                    if (embed.title or '').strip().lower() != 'crew record':
+                        continue
+
+                    activity = get_embed_field_value(embed, 'activity')
+                    employee, job_name = get_employee_and_job(embed, thread.name)
+                    if not activity:
+                        continue
+
+                    activity_upper = activity.upper()
+                    if 'TIE DOWN' in activity_upper:
+                        location = (get_embed_field_value(embed, 'location')
+                                    or get_embed_field_value(embed, 'location and work completed')
+                                    or 'Unknown')
+                        chronological_entries.append(
+                            f'{msg_time} | Tie Down | {employee} | Location: {location}')
+                    elif 'MARK COMPLETE' in activity_upper:
+                        train_name = get_embed_field_value(embed, 'train') or 'Unknown'
+                        notes = get_embed_field_value(embed, 'employee note(s)')
+                        completion_entry = (f'{msg_time} | Complete | {employee} | Job: {job_name} '
+                                            f'| Train: {train_name}')
+                        if notes:
+                            completion_entry += f' | Notes: {remove_at_mentions(notes)}'
+                        chronological_entries.append(completion_entry)
+            else:
+                user_content = msg.clean_content.strip() if msg.clean_content else ''
+                if len(user_content) < 1 and msg.attachments:
+                    user_content = ', '.join(a.filename for a in msg.attachments)
+                if len(user_content) < 1:
+                    continue
+
+                user_content = remove_at_mentions(user_content)
+                user_content = user_content.replace('\n', ' / ')
+                chronological_entries.append(f'{msg_time} | {msg.author.display_name}: {user_content}')
+
+        if not mark_available_info:
+            mark_available_info = f'Job: {thread.name}'
+
+        if completion_entry and completion_entry not in chronological_entries:
+            chronological_entries.append(completion_entry)
+
+        description_lines = [f'Job: {thread.name}']
+        if len(chronological_entries) > 0:
+            for entry in chronological_entries:
+                description_lines.append(f'- {entry}')
+
+        return '\n'.join(description_lines)
+
+    async def summarize_job_post_thread(thread: discord.Thread, cutoff_time: datetime | None):
+        source_messages = list()
+        delete_candidates = list()
+        first_message_id = None
+
+        async for msg in thread.history(limit=None, oldest_first=True):
+            if first_message_id is None:
+                first_message_id = msg.id
+
+            if cutoff_time is not None and msg.created_at > cutoff_time:
+                continue
+
+            delete_candidates.append(msg)
+
+            if first_message_id is not None and msg.id == first_message_id:
+                continue
+
+            source_messages.append(msg)
+
+        if len(delete_candidates) < 1 or len(source_messages) < 1:
+            return 0
+
+        summary_description = await build_job_post_summary_description(thread, source_messages)
+        summary_file = None
+        if len(summary_description) > 3800:
+            summary_file = discord.File(io.BytesIO(summary_description.encode('utf-8')), filename='summary.txt')
+            summary_description = 'Summary was too long for an embed description. Full content is attached as summary.txt.'
+        summary_embed = discord.Embed(title='JOB SUMMARY',
+                                      description=summary_description,
+                                      color=discord.Color.from_rgb(150, 75, 0))
+        summary_embed.set_footer(text='R8TE_SUMMARY')
+        if summary_file:
+            summary_message = await thread.send(embed=summary_embed,
+                                                file=summary_file,
+                                                allowed_mentions=discord.AllowedMentions.none())
+        else:
+            summary_message = await thread.send(embed=summary_embed,
+                                                allowed_mentions=discord.AllowedMentions.none())
+
+        deleted_count = 0
+        for msg in delete_candidates:
+            if msg.id == summary_message.id:
+                continue
+            if first_message_id is not None and msg.id == first_message_id:
+                continue
+            try:
+                await msg.delete()
+                deleted_count += 1
+                await asyncio.sleep(.1)
+            except discord.Forbidden:
+                continue
+            except discord.HTTPException:
+                continue
+
+        return deleted_count
+
+    async def summarize_old_job_post_threads(days_old: int):
+        forum_channel = find_forum_channel_by_name(JOB_POST_FORUM)
+        if forum_channel is None:
+            stat_msg = f'{last_world_datetime} (SUMMARIZE JOB POSTS): Forum named "{JOB_POST_FORUM}" not found'
+            await send_ch_msg(CH_LOG, stat_msg)
+            await asyncio.sleep(.3)
+            return
+
+        cutoff = datetime.now(timezone.utc) - timedelta(days=days_old)
+        stat_msg = (f'{last_world_datetime} (SUMMARIZE JOB POSTS): '
+                    f'Scanning {JOB_POST_FORUM}, days_old={days_old}, cutoff={cutoff}')
+        await send_ch_msg(CH_LOG, stat_msg)
+        await asyncio.sleep(.3)
+
+        for thread in iter_active_forum_threads(forum_channel):
+            try:
+                deleted_count = await summarize_job_post_thread(thread, cutoff)
+                if deleted_count > 0:
+                    stat_msg = (f'{last_world_datetime} (SUMMARIZE JOB POSTS): '
+                                f'Summarized thread "{thread.name}" and deleted {deleted_count} messages')
+                    await send_ch_msg(CH_LOG, stat_msg)
+                    await asyncio.sleep(.3)
+            except Exception as e:
+                stat_msg = (f'{last_world_datetime} (SUMMARIZE JOB POSTS): '
+                            f'Error summarizing thread "{thread.name}": {e}')
+                await send_ch_msg(CH_LOG, stat_msg)
+                await asyncio.sleep(.3)
+
     async def change_thread_tags(ctx: discord.ApplicationContext,
                                  tags_to_add: list, tags_to_remove: list | str | None = 'None'):
         thread = ctx.channel
         if not isinstance(thread, discord.Thread) or not isinstance(thread.parent, discord.ForumChannel):
-            await ctx.respond('This command must be used inside a job post thread.', ephemeral=True)
+            await respond_error_embed(ctx, 'This command must be used inside a job post thread.')
             # Is it kosher for this function to write straight into the thread?
             return -1  # Indicate an error occurred
         forum_channel = thread.parent
@@ -494,7 +929,7 @@ def run_discord_bot():
             for tag in tags_to_remove:
                 check_tag = discord.utils.find(lambda t: t.name.lower() == tag.lower(), forum_channel.available_tags)
                 if not check_tag:
-                    await ctx.respond(f'[r8TE] **ERROR**: Tag `{check_tag}` not found in this forum.', ephemeral=True)
+                    await respond_error_embed(ctx, f'Tag `{tag}` not found in this forum.')
                     return -1
                 else:
                     if check_tag in current_tags:
@@ -505,7 +940,7 @@ def run_discord_bot():
         for tag in tags_to_add:
             check_tag = discord.utils.find(lambda t: t.name.lower() == tag.lower(), forum_channel.available_tags)
             if not check_tag:
-                await ctx.respond(f'[r8TE] **ERROR**: Tag `{check_tag}` not found in this forum.', ephemeral=True)
+                await respond_error_embed(ctx, f'Tag `{tag}` not found in this forum.')
                 return -1
             else:
                 if check_tag not in current_tags:
@@ -514,15 +949,15 @@ def run_discord_bot():
             await thread.edit(applied_tags=current_tags)
 
         except discord.Forbidden:
-            await ctx.respond('[r8TE] **ERROR**: I do not have permission to edit this thread.', ephemeral=True)
+            await respond_error_embed(ctx, 'I do not have permission to edit this thread.')
         except Exception as e:
-            await ctx.respond(f'[r8TE] **ERROR**: {e}', ephemeral=True)
+            await respond_error_embed(ctx, str(e))
 
     @bot.slash_command(name='mark_available', description="Mark job as Available")
     @option("loco_num", description="Lead loco number", required=True)
-    @option("location", description="Train location", required=True)
+    @option("location", description="Train location (yard abbreviation and track number)", required=True)
     @option("train_symbol", description="Train symbol", required=False)
-    @option("train_info", description="Train info (", required=False)
+    @option("train_info", description="Train info (XX LD | XX MT | XXXX T | XXXX F | X.X HP/T)", required=False)
     async def mark_available(ctx: discord.ApplicationContext, loco_num: str, location: str,
                              train_symbol: str, train_info: str):
         global last_world_datetime
@@ -530,7 +965,7 @@ def run_discord_bot():
 
         thread = ctx.channel
         if not isinstance(thread, discord.Thread) or not isinstance(thread.parent, discord.ForumChannel):
-            await ctx.respond('This command must be used inside a job post thread.', ephemeral=True)
+            await respond_error_embed(ctx, 'This command must be used inside a job post thread.')
             return
         await change_thread_tags(ctx, [AVAILABLE_TAG], 'ALL')
         symbol_msg = 'Train symbol'
@@ -549,11 +984,17 @@ def run_discord_bot():
         job_post += '```'
         try:
             await ctx.respond(job_post, ephemeral=False)
+            reminder = ("Review any previous Summaries if present, and comment any applicable instructions "
+                        "for this iteration of the job. Then delete the previous Summary.")
+            if hasattr(ctx, "send_followup"):
+                await ctx.send_followup(reminder, ephemeral=True)
+            elif hasattr(ctx, "followup") and hasattr(ctx.followup, "send"):
+                await ctx.followup.send(reminder, ephemeral=True)
 
         except discord.Forbidden:
-            await ctx.respond('[r8TE] **ERROR**: I do not have permission to edit this thread.', ephemeral=True)
+            await respond_error_embed(ctx, 'I do not have permission to edit this thread.')
         except Exception as e:
-            await ctx.respond(f'[r8TE] **ERROR**: {e}', ephemeral=True)
+            await respond_error_embed(ctx, str(e))
 
     @bot.slash_command(name='staff_help', description="Mark job as needing staff attention")
     @option("note", description="Describe the issue", required=False)
@@ -565,7 +1006,7 @@ def run_discord_bot():
         # thread_id = ctx.channel.id
         # thread_name = ctx.channel.name
         if not isinstance(thread, discord.Thread) or not isinstance(thread.parent, discord.ForumChannel):
-            await ctx.respond('This command must be used inside a job post thread.', ephemeral=True)
+            await respond_error_embed(ctx, 'This command must be used inside a job post thread.')
             return
         # thread_name = ctx.channel.name
         forum_channel = thread.parent
@@ -580,9 +1021,9 @@ def run_discord_bot():
             await ctx.respond(help_post, ephemeral=False)
 
         except discord.Forbidden:
-            await ctx.respond('[r8TE] **ERROR**: I do not have permission to edit this thread.', ephemeral=True)
+            await respond_error_embed(ctx, 'I do not have permission to edit this thread.')
         except Exception as e:
-            await ctx.respond(f'[r8TE] **ERROR**: {e}', ephemeral=True)
+            await respond_error_embed(ctx, str(e))
 
     @bot.slash_command(name='player_record', description="Show player how many hours they have logged in total.")
     async def player_record(ctx: discord.ApplicationContext):
@@ -591,7 +1032,7 @@ def run_discord_bot():
                           ephemeral=True)
 
     @bot.slash_command(name='crew', description=f"Crew a train")
-    @option("symbol", description="Train symbol", required=True)
+    @option("symbol", description="Train symbol as shown in Run8", required=True)
     async def crew(ctx: discord.ApplicationContext, symbol: str):
         global last_world_datetime
         global working_jobs
@@ -601,36 +1042,31 @@ def run_discord_bot():
         thread_name = ctx.channel.name
 
         if not isinstance(thread, discord.Thread) or not isinstance(thread.parent, discord.ForumChannel):
-            await ctx.respond('This command must be used inside a job post thread.', ephemeral=True)
+            await respond_error_embed(ctx, 'This command must be used inside a job post thread.')
             return
 
         try:
             await ctx.respond(f'Attempting to crew train {symbol}', ephemeral=True)
             nbr_of_symbols = duplicate_symbol(curr_trains, symbol)
             if nbr_of_symbols > 1:
-                await ctx.respond(f'**UNABLE TO CREW** : Train symbol "{symbol}" '
-                                  f'found on {nbr_of_symbols} trains.', ephemeral=True)
+                await respond_error_embed(ctx, f'Unable to crew: Train symbol "{symbol}" '
+                                               f'found on {nbr_of_symbols} trains.')
                 return
             tid = find_tid_by_symbol(symbol, curr_trains)
             if tid != -1:  # Train ID found
                 if curr_trains[tid].engineer.lower() == 'none':
                     if player_crew_train(curr_trains, tid, ctx.author.id, ctx.author.display_name, thread_id,
                                          last_world_datetime) < 0:
-                        await ctx.respond(f'**UNABLE TO CREW** : You are currently listed as crewing'
-                                          f' [{players[ctx.author.mention].train_symbol}]**', ephemeral=True)
+                        await respond_error_embed(ctx, f'Unable to crew: You are currently listed as crewing '
+                                                       f'[{players[ctx.author.mention].train_symbol}].')
                         return
                     try:
                         working_jobs[thread_id].crew.append(ctx.author.display_name)
                     except KeyError:
                         working_jobs[thread_id] = Job(thread_name, [ctx.author.display_name])
 
-                    msg = f'{curr_trains[tid].last_time_moved} {ctx.author.display_name} '
-                    if len(working_jobs[thread_id].crew) > 1:
-                        msg += f'crewed {curr_trains[tid].symbol}, assisting on job: *{thread_name}*'
-                    else:
-                        msg += f'crewed {curr_trains[tid].symbol}, working job: *{thread_name}*'
+                    role_msg = 'ASSISTING ON JOB' if len(working_jobs[thread_id].crew) > 1 else 'WORKING JOB'
                     await change_thread_tags(ctx, [CREWED_TAG], [AVAILABLE_TAG])
-                    await thread.send(msg)
                     # Update job ledger; First see if we have already created a ledger entry
                     job_name = None
                     async for message in thread.history(limit=None):  # Walk through thread looking for ledger entry
@@ -660,9 +1096,14 @@ def run_discord_bot():
                                       f'NEW LEDGER JOBID# `{job_id}`   <#{ledger_thread.id}>')
                         await thread.send(no_job_msg)
                     embed_msg = discord.Embed(title='CREW RECORD', color=discord.Color.green())
-                    embed_msg.add_field(name='__Employee__', value=str(ctx.author.display_name), inline=False)
+                    embed_msg.add_field(name='__Employee | Job__',
+                                        value=f'{ctx.author.display_name} | {thread_name}',
+                                        inline=False)
+                    embed_msg.add_field(name='__Train__', value=str(curr_trains[tid].symbol), inline=False)
                     embed_msg.add_field(name='__Activity__', value='CREW (CLOCK IN)', inline=False)
+                    embed_msg.add_field(name='__Role__', value=role_msg, inline=False)
                     embed_msg.add_field(name='__Time__', value=str(last_world_datetime), inline=False)
+                    await thread.send(embed=embed_msg)
                     await ledger_thread.send(embed=embed_msg)
                     # Edit summary at top of thread
                     first_msg = await ledger_thread.history(limit=1, oldest_first=True).flatten()
@@ -684,24 +1125,25 @@ def run_discord_bot():
                         await msg_obj.edit(content=new_message)
 
                 else:
-                    await ctx.respond(f'**UNABLE TO CREW, Train {symbol} shows '
-                                      f'crewed by {curr_trains[tid].engineer}**', ephemeral=True)
+                    await respond_error_embed(ctx, f'Unable to crew: Train {symbol} shows '
+                                                   f'crewed by {curr_trains[tid].engineer}.')
             else:
-                await ctx.respond(f'**UNABLE TO CREW**, Train *{symbol}* not found (if you recently changed locomotive '
-                                  f'symbol/tag, please try again in about 2 minutes)', ephemeral=True)
+                await respond_error_embed(ctx, f'Unable to crew: Train {symbol} not found '
+                                               f'(if you recently changed locomotive symbol/tag, '
+                                               f'please try again in about 2 minutes).')
         except discord.Forbidden:
             await ctx.respond('[r8TE] **ERROR** (*crew* command): no permission to edit this thread.', ephemeral=False)
         except Exception as e:
             await ctx.respond(f'[r8TE] **ERROR** (*crew* command): {e}', ephemeral=False)
 
     @bot.slash_command(name='tie_down', description=f"Tie down a train")
-    @option("location", description="Tie-down location", required=True)
+    @option("location", description="Tie-down location and any pertinent details", required=True)
     async def tie_down(ctx: discord.ApplicationContext, location: str):
         thread = ctx.channel
         thread_id = ctx.channel.id
         thread_name = ctx.channel.name
         if not isinstance(thread, discord.Thread) or not isinstance(thread.parent, discord.ForumChannel):
-            await ctx.respond('This command must be used inside a job post thread.', ephemeral=True)
+            await respond_error_embed(ctx, 'This command must be used inside a job post thread.')
             return
         try:
             await ctx.respond(f'Attempting to tie down', ephemeral=True)
@@ -709,7 +1151,7 @@ def run_discord_bot():
                 if players[ctx.author.id].job_thread != thread_id:
                     msg = (f'**Unable to tie down** - incorrect job thread. Please execute the `/tie_down` '
                            f'command in <#{players[ctx.author.id].job_thread}>')
-                    await ctx.respond(msg, ephemeral=True)
+                    await respond_error_embed(ctx, msg)
                     return
                 tid = players[ctx.author.id].train_id
                 orig_engineer = ctx.author.id
@@ -721,22 +1163,17 @@ def run_discord_bot():
                     curr_trains[tid].job_thread = None
                 start_time = players[ctx.author.id].start_time
                 del players[ctx.author.id]  # Remove this player record
-                time_worked = round((last_world_datetime - start_time).total_seconds() / 3600, 1)
+                shift_hours = round((last_world_datetime - start_time).total_seconds() / 3600, 1)
+                job_display_name = str(working_jobs[thread_id].name)
+                remaining_crew = None
                 # Check to see if this is a multi-crewed job
                 if len(working_jobs[thread_id].crew) < 2:
                     # Single crew train
-                    msg = (f'{ctx.author.display_name} tied down train '
-                           f'{orig_symbol} at {location}\nTime worked: {time_worked} hours')
                     del working_jobs[thread_id]
                 else:
                     # Multi-crew train
                     working_jobs[thread_id].crew.remove(ctx.author.display_name)
-                    msg = (f'{ctx.author.display_name} tied down train '
-                           f'{orig_symbol} at {location}\nTime worked: {time_worked} hours\n'
-                           f'Job *{working_jobs[thread_id].name}* still being worked by:')
-                    for player in working_jobs[thread_id].crew:
-                        msg += f' {player},'
-                    msg = msg[:-1]
+                    remaining_crew = ', '.join(working_jobs[thread_id].crew)
 
                 if tid in watched_trains:
                     # This train has a watch on it - time to remove, and strike-thru previous alert messages
@@ -774,12 +1211,17 @@ def run_discord_bot():
                                   f'NEW LEDGER JOBID# `{job_id}`   <#{ledger_thread.id}>')
                     await thread.send(no_job_msg)
                 embed_msg = discord.Embed(title='CREW RECORD', color=discord.Color.yellow())
-                embed_msg.add_field(name='__Employee__', value=str(ctx.author.display_name), inline=False)
+                embed_msg.add_field(name='__Employee | Job__',
+                                    value=f'{ctx.author.display_name} | {job_display_name}',
+                                    inline=False)
+                embed_msg.add_field(name='__Train__', value=str(orig_symbol), inline=False)
                 embed_msg.add_field(name='__Activity__', value='TIE DOWN (CLOCK OUT)', inline=False)
                 embed_msg.add_field(name='__Time__', value=str(last_world_datetime), inline=False)
-                embed_msg.add_field(name='__Location__', value=str(location), inline=False)
-                embed_msg.add_field(name='__Hours logged__', value=str(time_worked), inline=False)
-                await ledger_thread.send(embed=embed_msg)
+                embed_msg.add_field(name='__Location and work completed__', value=str(location), inline=False)
+                if remaining_crew is not None:
+                    embed_msg.add_field(name='__Remaining Crew__',
+                                        value=remaining_crew if remaining_crew else 'None',
+                                        inline=False)
                 # Edit summary at top of thread
                 first_msg = await ledger_thread.history(limit=1, oldest_first=True).flatten()
                 msg_obj = first_msg[0]
@@ -788,14 +1230,14 @@ def run_discord_bot():
                     # New embed format
                     ledger_embed = msg_obj.embeds[0]
                     new_content = (ledger_embed.description[:-3] +
-                                   f'\n{ctx.author.display_name} | CLOCK_OUT | {last_world_datetime.strftime("%m/%d/%y %H:%M")} | {time_worked}```')
+                                   f'\n{ctx.author.display_name} | CLOCK_OUT | {last_world_datetime.strftime("%m/%d/%y %H:%M")} | {shift_hours}```')
                     new_message = prettify(new_content)
                     ledger_embed.description = new_message
                     await msg_obj.edit(embed=ledger_embed)
                 else:
                     # Old plain text format
                     new_content = (msg_obj.content[:-3] +
-                                   f'\n{ctx.author.display_name} | CLOCK_OUT | {last_world_datetime.strftime("%m/%d/%y %H:%M")} | {time_worked}```')
+                                   f'\n{ctx.author.display_name} | CLOCK_OUT | {last_world_datetime.strftime("%m/%d/%y %H:%M")} | {shift_hours}```')
                     new_message = prettify(new_content)
                     await msg_obj.edit(content=new_message)
                 # Give summary of hours player has worked
@@ -804,21 +1246,23 @@ def run_discord_bot():
                 for i in range(1, len(logs)):  # Create dict with work logs keyed on player name with list of hours
                     employee[logs[i].split('|')[0].strip().lower()].append(float(logs[i].split('|')[3].strip()))
                 total = 0
-                for time_worked in employee[ctx.author.display_name.lower()]:
-                    total += time_worked
-                msg += f'\n{ctx.author.display_name} has accrued {round(total, 2)} hours worked on this job.'
+                for time_increment in employee[ctx.author.display_name.lower()]:
+                    total += time_increment
+                embed_msg.add_field(name='__Hours logged on this shift | Total hours on this job__',
+                                    value=f'{shift_hours} | {round(total, 2)}',
+                                    inline=False)
                 # Create database entry
                 job_name = ledger_thread.name.split('|')[1].strip()
                 db_entry = (f'{ctx.author.id},{ctx.author.display_name},TIE_DOWN,{last_world_datetime},'
-                            f'{job_name.replace(",", " ")},{time_worked}')
+                            f'{job_name.replace(",", " ")},{shift_hours}')
                 write_record(PLAYER_DB_FILENAME, db_entry)
-                await thread.send(msg)
+                await thread.send(embed=embed_msg)
+                await ledger_thread.send(embed=embed_msg)
                 await change_thread_tags(ctx, [AVAILABLE_TAG], [CREWED_TAG])
 
                 return
             else:
-                await ctx.respond(f'**ERROR** Unable to tie-down: '
-                                  f'You are not listed as crew on any train.', ephemeral=True)
+                await respond_error_embed(ctx, 'Unable to tie-down: You are not listed as crew on any train.')
 
         except discord.Forbidden:
             await ctx.respond('[r8TE] **ERROR** (*tie_down* command): no permission to edit this thread.',
@@ -826,14 +1270,14 @@ def run_discord_bot():
         except Exception as e:
             await ctx.respond(f'[r8TE] **ERROR** (*tie_down* command): {e}', ephemeral=False)
 
-    @bot.slash_command(name='complete', description=f"Mark a job complete")
+    @bot.slash_command(name='complete', description=f"Mark a job complete, double check all Work Orders have been completed")
     @option('notes', description='completion notes', required=False)
     async def complete(ctx: discord.ApplicationContext, notes: str):
         thread = ctx.channel
         thread_id = ctx.channel.id
         thread_name = ctx.channel.name
         if not isinstance(thread, discord.Thread) or not isinstance(thread.parent, discord.ForumChannel):
-            await ctx.respond('This command must be used inside a job post thread.', ephemeral=True)
+            await respond_error_embed(ctx, 'This command must be used inside a job post thread.')
             return
         try:
             await ctx.respond(f'Attempting to mark *{working_jobs[players[ctx.author.id].job_thread].name}'
@@ -843,7 +1287,7 @@ def run_discord_bot():
                     if players[ctx.author.id].job_thread != thread_id:
                         msg = (f'**Unable to mark this job complete** - incorrect job thread. Please execute the '
                                f'`/complete` command in <#{players[ctx.author.id].job_thread}>')
-                        await ctx.respond(msg, ephemeral=True)
+                        await respond_error_embed(ctx, msg)
                         return
                 job_complete = False
                 tid = players[ctx.author.id].train_id
@@ -894,15 +1338,16 @@ def run_discord_bot():
                 # Check to see if this is a multi-crewed job, if so we are really just tying down
                 if len(working_jobs[thread_id].crew) < 2:
                     # Single crew train
-                    msg = (f'{ctx.author.display_name} tied down train {orig_symbol}, and marked job '
-                           f'*{working_jobs[thread_id].name}* `{COMPLETED_TAG}`\nTime worked: {time_worked} hours')
+                    job_display_name = str(working_jobs[thread_id].name)
                     embed_msg = discord.Embed(title='CREW RECORD', color=discord.Color.orange())
-                    embed_msg.add_field(name='__Employee__', value=str(ctx.author.display_name), inline=False)
+                    embed_msg.add_field(name='__Employee | Job__',
+                                        value=f'{ctx.author.display_name} | {job_display_name}',
+                                        inline=False)
+                    embed_msg.add_field(name='__Train__', value=str(orig_symbol), inline=False)
                     embed_msg.add_field(name='__Activity__', value='MARK COMPLETE (CLOCK OUT)', inline=False)
                     embed_msg.add_field(name='__Time__', value=str(last_world_datetime), inline=False)
                     if notes:
                         embed_msg.add_field(name='__Employee note(s)__', value=str(notes), inline=False)
-                    embed_msg.add_field(name='__Hours logged__', value=str(time_worked), inline=False)
                     # Edit summary at top of thread
                     first_msg = await ledger_thread.history(limit=1, oldest_first=True).flatten()
                     msg_obj = first_msg[0]
@@ -929,22 +1374,24 @@ def run_discord_bot():
                     await change_thread_tags(ctx, [COMPLETED_TAG], 'ALL')
                 else:
                     # Multi-crew, so tie down instead - no need to change thread tags
+                    job_display_name = str(working_jobs[thread_id].name)
                     working_jobs[thread_id].crew.remove(ctx.author.display_name)  # Remove player from job list
-                    msg = (f'{ctx.author.display_name} tied down train {orig_symbol}\nTime worked: '
-                           f'{time_worked} hours\n Job *{working_jobs[thread_id].name}* still being worked by:')
-                    for player in working_jobs[thread_id].crew:
-                        msg += f' {player},'
-                    msg = msg[:-1]
+                    remaining_crew = ', '.join(working_jobs[thread_id].crew)
                     embed_msg = discord.Embed(title='CREW RECORD', color=discord.Color.yellow())
-                    embed_msg.add_field(name='__Employee__', value=str(ctx.author.display_name), inline=False)
+                    embed_msg.add_field(name='__Employee | Job__',
+                                        value=f'{ctx.author.display_name} | {job_display_name}',
+                                        inline=False)
+                    embed_msg.add_field(name='__Train__', value=str(orig_symbol), inline=False)
                     embed_msg.add_field(name='__Activity__', value='TIE DOWN (CLOCK OUT)', inline=False)
                     embed_msg.add_field(name='__Time__', value=str(last_world_datetime), inline=False)
                     embed_msg.add_field(name='__Administrative Note__',
                                         value=str('*Employee attempted to mark a multi-crewed job as complete*'),
                                         inline=False)
+                    embed_msg.add_field(name='__Remaining Crew__',
+                                        value=remaining_crew if remaining_crew else 'None',
+                                        inline=False)
                     if notes:
                         embed_msg.add_field(name='__Employee note(s)__', value=str(notes), inline=False)
-                    embed_msg.add_field(name='__Hours logged__', value=str(time_worked), inline=False)
                     # Edit summary at top of thread
                     first_msg = await ledger_thread.history(limit=1, oldest_first=True).flatten()
                     msg_obj = first_msg[0]
@@ -966,8 +1413,6 @@ def run_discord_bot():
                     db_entry = (f'{ctx.author.id},{ctx.author.display_name},TIE_DOWN,{last_world_datetime},'
                                 f'{job_name.replace(",", " ")},{time_worked}')
                     write_record(PLAYER_DB_FILENAME, db_entry)
-                if notes:
-                    msg += f'\nNotes: {notes}'
                 # Give summary of hours player has worked
                 employee = defaultdict(list)
                 logs = new_content.split('```')[1].split('\n')  # Get the summary section
@@ -976,7 +1421,9 @@ def run_discord_bot():
                 total = 0
                 for time_increment in employee[ctx.author.display_name]:
                     total += time_increment
-                msg += f'\n{ctx.author.display_name} has accrued {round(total, 2)} hours on this job.'
+                embed_msg.add_field(name='__Hours logged on this shift | Total hours on this job__',
+                                    value=f'{time_worked} | {round(total, 2)}',
+                                    inline=False)
                 new_message = prettify(new_content)
                 if job_complete:
                     # Since job has completed, we also sum all the work done and update the job ledger
@@ -1001,8 +1448,16 @@ def run_discord_bot():
                 else:
                     # Old plain text format
                     await msg_obj.edit(content=new_message)
-                await thread.send(msg)
+                await thread.send(embed=embed_msg)
                 await ledger_thread.send(embed=embed_msg)
+                if job_complete:
+                    summary_due = datetime.now(timezone.utc) + timedelta(hours=24)
+                    job_post_summary_schedule[thread.id] = summary_due
+                    stat_msg = (f'{last_world_datetime} (SCHEDULED SUMMARY): Thread "{thread.name}" '
+                                f'scheduled for {summary_due.strftime("%Y-%m-%d %H:%M:%S %Z")} '
+                                f'(24h after /complete)')
+                    await send_ch_msg(CH_LOG, stat_msg)
+                    await asyncio.sleep(.3)
                 if tid in watched_trains:
                     # This train has a watch on it - time to remove, and strike-thru previous alert messages
                     msg = (f' {GREEN_CIRCLE} {last_world_datetime} **POWERED DOWN**: Train {orig_symbol}'
@@ -1013,12 +1468,43 @@ def run_discord_bot():
 
                 return
             else:
-                await ctx.respond(f'Unable to mark as complete; are you sure you are clocked in?', ephemeral=True)
+                await respond_error_embed(ctx, 'Unable to mark as complete; are you sure you are clocked in?')
         except discord.Forbidden:
             await ctx.respond('[r8TE] **ERROR** (*complete* command): no permission to edit this thread.',
                               ephemeral=False)
         except Exception as e:
             await ctx.respond(f'[r8TE] **ERROR** (*complete* command): {e}', ephemeral=False)
+
+    @bot.slash_command(name='summarize', description="Summarize this job post and delete previous messages.")
+    async def summarize(ctx: discord.ApplicationContext):
+        thread = ctx.channel
+        if not isinstance(thread, discord.Thread) or not isinstance(thread.parent, discord.ForumChannel):
+            await respond_error_embed(ctx, 'This command must be used inside a job post thread.')
+            return
+        if thread.parent.name.lower() != JOB_POST_FORUM.lower():
+            await respond_error_embed(ctx, f'This command must be used inside threads in "{JOB_POST_FORUM}".')
+            return
+
+        await ctx.respond('Running summary for this post...', ephemeral=True)
+        deleted_count = await summarize_job_post_thread(thread, None)
+
+        if deleted_count > 0:
+            status_msg = (f'{last_world_datetime} (MANUAL SUMMARY): '
+                          f'Summarized thread "{thread.name}" and deleted {deleted_count} messages')
+            await send_ch_msg(CH_LOG, status_msg)
+            await asyncio.sleep(.3)
+
+            followup_msg = f'Summary posted. Deleted {deleted_count} messages.'
+        else:
+            followup_msg = 'No messages found to summarize.'
+
+        try:
+            if hasattr(ctx, "send_followup"):
+                await ctx.send_followup(followup_msg, ephemeral=True)
+            elif hasattr(ctx, "followup") and hasattr(ctx.followup, "send"):
+                await ctx.followup.send(followup_msg, ephemeral=True)
+        except Exception:
+            pass
 
     @bot.slash_command(name="r8te_clear_crew", description="Remove player from crew status")
     @option('player_id', description='Player ID', required=True)
@@ -1587,16 +2073,21 @@ def run_discord_bot():
                 defect_msg = 'None'
             msg = (f'{report.timestamp} DET RPT // {report.name} // {report.symbol} [{engineer}] '
                    f'| {report.speed} mph | {report.axles} axles | Defects: {defect_msg}')
+            detector_embed = discord.Embed(title='DET RPT',
+                                           description=(f'{report.timestamp} // {report.name} // {report.symbol} '
+                                                        f'[{engineer}] | {report.speed} mph | {report.axles} axles '
+                                                        f'| Defects: {defect_msg}'),
+                                           color=discord.Color.light_gray())
             local_players = players.copy()  # Protect against the players dict being changed while iterating below
             for player in local_players.values():
                 if player.train_symbol.lower() in report.symbol.lower():
                     player_found = True
                     # Send report to job thread
                     forum_thread = await bot.fetch_channel(player.job_thread)
-                    await send_ch_msg(forum_thread, msg, log=False)
+                    await send_ch_embed(forum_thread, detector_embed, log=False)
                     await asyncio.sleep(.3)
             if player_found or TRACK_AI_DD:
-                await send_ch_msg(CH_DETECTOR, msg)
+                await send_ch_embed(CH_DETECTOR, detector_embed, log=True, log_text=msg)
                 await asyncio.sleep(.3)
             else:
                 log_msg(msg)  # Go ahead and write AI DD messages to log
@@ -1608,15 +2099,7 @@ def run_discord_bot():
         keyword = cleanup_detector_messages.keyword
         days_old = cleanup_detector_messages.days_old
 
-        # Try to locate the forum channel by name across all guilds
-        forum_channel = None
-        for guild in bot.guilds:
-            for channel in guild.channels:
-                if isinstance(channel, discord.ForumChannel) and channel.name == JOB_POST_FORUM:
-                    forum_channel = channel
-                    break
-            if forum_channel:
-                break
+        forum_channel = find_forum_channel_by_name(JOB_POST_FORUM)
 
         if forum_channel is None:
             stat_msg = f'{last_world_datetime} (CLEANUP DETECTOR MESSAGES): Forum named "{JOB_POST_FORUM}" not found'
@@ -1631,21 +2114,37 @@ def run_discord_bot():
         await send_ch_msg(CH_LOG, stat_msg)
         await asyncio.sleep(.3)
 
-        for thread in forum_channel.threads:
-            if thread.archived:
-                continue
-
+        for thread in iter_active_forum_threads(forum_channel):
             try:
                 async for msg in thread.history(limit=None):
                     # Only delete if old enough
                     if msg.created_at > cutoff:
                         continue
 
-                    if not msg.content:
-                        continue
-
                     stat_msg = None
-                    if keyword.lower() in msg.content.lower():
+                    is_detector_msg = False
+                    if msg.content and keyword.lower() in msg.content.lower():
+                        is_detector_msg = True
+
+                    if not is_detector_msg and msg.embeds:
+                        for embed in msg.embeds:
+                            text_chunks = list()
+                            if embed.title:
+                                text_chunks.append(embed.title)
+                            if embed.description:
+                                text_chunks.append(embed.description)
+                            if embed.footer and embed.footer.text:
+                                text_chunks.append(embed.footer.text)
+                            for field in embed.fields:
+                                if field.name:
+                                    text_chunks.append(field.name)
+                                if field.value:
+                                    text_chunks.append(str(field.value))
+                            if keyword.lower() in " ".join(text_chunks).lower():
+                                is_detector_msg = True
+                                break
+
+                    if is_detector_msg:
                         try:
                             await msg.delete()
                             stat_msg = (f'{last_world_datetime} (CLEANUP DETECTOR MESSAGES): Deleted message '
@@ -1666,8 +2165,108 @@ def run_discord_bot():
                 await send_ch_msg(CH_LOG, stat_msg)
                 await asyncio.sleep(.3)
 
+    @tasks.loop(minutes=10)
+    async def run_scheduled_job_post_summaries():
+        now_utc = datetime.now(timezone.utc)
+        due_thread_ids = list()
+        for thread_id, due_time in job_post_summary_schedule.items():
+            if due_time <= now_utc:
+                due_thread_ids.append(thread_id)
+
+        for thread_id in due_thread_ids:
+            try:
+                thread = bot.get_channel(thread_id)
+                if thread is None:
+                    thread = await bot.fetch_channel(thread_id)
+                if not isinstance(thread, discord.Thread):
+                    raise TypeError(f'Channel ID {thread_id} is not a thread.')
+
+                deleted_count = await summarize_job_post_thread(thread, None)
+                stat_msg = (f'{last_world_datetime} (SCHEDULED SUMMARY): '
+                            f'Summarized thread "{thread.name}" and deleted {deleted_count} messages')
+                await send_ch_msg(CH_LOG, stat_msg)
+                await asyncio.sleep(.3)
+                del job_post_summary_schedule[thread_id]
+            except Exception as e:
+                retry_time = datetime.now(timezone.utc) + timedelta(hours=1)
+                job_post_summary_schedule[thread_id] = retry_time
+                stat_msg = (f'{last_world_datetime} (SCHEDULED SUMMARY): '
+                            f'Error summarizing thread ID {thread_id}: {e}; '
+                            f'retrying at {retry_time.strftime("%Y-%m-%d %H:%M:%S %Z")}')
+                await send_ch_msg(CH_LOG, stat_msg)
+                await asyncio.sleep(.3)
+
+    @tasks.loop(hours=12)
+    async def keep_job_track_threads_alive():
+        days_old = keep_job_track_threads_alive.days_old
+        keepalive_text = keep_job_track_threads_alive.keepalive_text
+        global job_track_thread_keepalive
+
+        forum_channel = find_forum_channel_by_name(JOB_TRACK_FORUM)
+
+        if forum_channel is None:
+            stat_msg = f'{last_world_datetime} (KEEP JOB TRACK THREADS ALIVE): Forum named "{JOB_TRACK_FORUM}" not found'
+            await send_ch_msg(CH_LOG, stat_msg)
+            await asyncio.sleep(.3)
+            return
+
+        cutoff = datetime.now(timezone.utc) - timedelta(days=days_old)
+        stat_msg = (f'{last_world_datetime} (KEEP JOB TRACK THREADS ALIVE): '
+                    f'Scanning {JOB_TRACK_FORUM}, '
+                    f'days_old={days_old}, cutoff={cutoff}')
+        await send_ch_msg(CH_LOG, stat_msg)
+        await asyncio.sleep(.3)
+
+        active_thread_ids = set()
+        for thread in iter_active_forum_threads(forum_channel):
+            active_thread_ids.add(thread.id)
+
+            try:
+                job_post_thread = await get_associated_job_post_thread(thread)
+                if job_post_thread is not None:
+                    post_tags = job_post_thread.applied_tags or []
+                    if any(tag.name.lower() == COMPLETED_TAG.lower() for tag in post_tags):
+                        continue
+
+                last_activity = await get_thread_last_activity(thread, job_track_thread_keepalive)
+
+                if last_activity is None:
+                    continue
+
+                if last_activity > cutoff:
+                    continue
+
+                await thread.send(keepalive_text)
+                job_track_thread_keepalive[thread.id] = datetime.now(timezone.utc)
+                stat_msg = (f'{last_world_datetime} (KEEP JOB TRACK THREADS ALIVE): '
+                            f'Posted keepalive in thread "{thread.name}"')
+                await send_ch_msg(CH_LOG, stat_msg)
+                await asyncio.sleep(.3)
+
+            except discord.Forbidden:
+                stat_msg = (f'{last_world_datetime} (KEEP JOB TRACK THREADS ALIVE): '
+                            f'Missing permissions in thread "{thread.name}".')
+                await send_ch_msg(CH_LOG, stat_msg)
+                await asyncio.sleep(.3)
+            except discord.HTTPException as e:
+                stat_msg = (f'{last_world_datetime} (KEEP JOB TRACK THREADS ALIVE): '
+                            f'API error in thread "{thread.name}": {e}')
+                await send_ch_msg(CH_LOG, stat_msg)
+                await asyncio.sleep(.3)
+            except Exception as e:
+                stat_msg = (f'{last_world_datetime} (KEEP JOB TRACK THREADS ALIVE): '
+                            f'Error reading thread "{thread.name}": {e}')
+                await send_ch_msg(CH_LOG, stat_msg)
+                await asyncio.sleep(.3)
+
+        for thread_id in list(job_track_thread_keepalive):
+            if thread_id not in active_thread_ids:
+                del job_track_thread_keepalive[thread_id]
+
     cleanup_detector_messages.keyword = "DET RPT"
     cleanup_detector_messages.days_old = 12
+    keep_job_track_threads_alive.days_old = 12
+    keep_job_track_threads_alive.keepalive_text = "[r8TE] Keepalive"
 
     @bot.event
     async def on_ready():
@@ -1681,5 +2280,7 @@ def run_discord_bot():
         scan_world_state.start()
         scan_detectors.start()
         cleanup_detector_messages.start()
+        run_scheduled_job_post_summaries.start()
+        keep_job_track_threads_alive.start()
 
     bot.run(BOT_TOKEN)
